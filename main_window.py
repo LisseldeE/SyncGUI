@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import time
 from datetime import datetime
 from collections import defaultdict
 from PyQt5.QtWidgets import (
@@ -8,7 +9,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QFileDialog, QTableWidget,
     QTableWidgetItem, QProgressBar, QMessageBox, QHeaderView,
     QDialog, QDialogButtonBox, QGroupBox, QRadioButton, QButtonGroup,
-    QFrame, QSizePolicy, QCheckBox
+    QFrame, QSizePolicy, QCheckBox, QListWidget, QListWidgetItem
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
@@ -196,14 +197,15 @@ class ScanWorker(QThread):
     progress = pyqtSignal(int, int)
     finished = pyqtSignal(dict, dict)
     
-    def __init__(self, wintogo_dir: str, local_dir: str):
+    def __init__(self, wintogo_dir: str, local_dir: str, ignore_rules: list = None):
         super().__init__()
         self.wintogo_dir = wintogo_dir
         self.local_dir = local_dir
+        self.ignore_rules = ignore_rules or []
     
     def run(self):
-        wintogo_files = scan_directory(self.wintogo_dir, self._progress_callback)
-        local_files = scan_directory(self.local_dir, self._progress_callback)
+        wintogo_files = scan_directory(self.wintogo_dir, self._progress_callback, self.ignore_rules)
+        local_files = scan_directory(self.local_dir, self._progress_callback, self.ignore_rules)
         self.finished.emit(wintogo_files, local_files)
     
     def _progress_callback(self, current: int, total: int):
@@ -235,7 +237,7 @@ class CompareWorker(QThread):
 
 
 class SyncWorker(QThread):
-    progress = pyqtSignal(int, int, str)
+    progress = pyqtSignal(object, object, object, object, str)
     finished = pyqtSignal(int, int, int)
     
     def __init__(self, diff_results: list, conflict_decisions: dict,
@@ -252,29 +254,49 @@ class SyncWorker(QThread):
         skip_count = 0
         
         to_sync = [d for d in self.diff_results if d.status != FileStatus.SAME]
-        total = len(to_sync)
+        
+        total_bytes = 0
+        for diff in to_sync:
+            if diff.wintogo_info:
+                total_bytes += diff.wintogo_info.size
+            elif diff.local_info:
+                total_bytes += diff.local_info.size
+        
+        transferred_bytes = 0
         
         for idx, diff in enumerate(to_sync):
-            self.progress.emit(idx + 1, total, diff.relative_path)
+            file_size = 0
+            if diff.wintogo_info:
+                file_size = diff.wintogo_info.size
+            elif diff.local_info:
+                file_size = diff.local_info.size
             
+            decision = "skip"
             if diff.status == FileStatus.WINTOGO_ONLY:
-                if sync_file(diff, self.wintogo_dir, self.local_dir, "to_local"):
-                    success_count += 1
-                else:
-                    fail_count += 1
+                decision = "to_local"
             elif diff.status == FileStatus.LOCAL_ONLY:
-                if sync_file(diff, self.wintogo_dir, self.local_dir, "to_wintogo"):
-                    success_count += 1
-                else:
-                    fail_count += 1
+                decision = "to_wintogo"
             elif diff.status == FileStatus.CONFLICT:
                 decision = self.conflict_decisions.get(diff.relative_path, "skip")
-                if decision == "skip":
-                    skip_count += 1
-                elif sync_file(diff, self.wintogo_dir, self.local_dir, decision):
-                    success_count += 1
-                else:
-                    fail_count += 1
+            
+            if decision == "skip":
+                skip_count += 1
+                self.progress.emit(transferred_bytes, total_bytes, 0, file_size, diff.relative_path)
+                continue
+            
+            start_bytes = transferred_bytes
+            current_total_bytes = total_bytes
+            current_filename = diff.relative_path
+            
+            def progress_callback(copied: int, file_total: int, start=start_bytes, total_b=current_total_bytes, name=current_filename):
+                self.progress.emit(start + copied, total_b, copied, file_total, name)
+            
+            if sync_file(diff, self.wintogo_dir, self.local_dir, decision, progress_callback):
+                success_count += 1
+                transferred_bytes += file_size
+            else:
+                fail_count += 1
+                transferred_bytes += file_size
         
         self.finished.emit(success_count, fail_count, skip_count)
 
@@ -513,10 +535,173 @@ class ConflictDialog(QDialog):
         return False
 
 
+class IgnoreRulesDialog(QDialog):
+    def __init__(self, rules, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("忽略规则设置")
+        self.setMinimumSize(450, 400)
+        self.rules = rules.copy()
+        self._init_ui()
+    
+    def _init_ui(self):
+        self.setStyleSheet("""
+            QDialog {
+                background-color: white;
+            }
+            QLabel {
+                color: #495057;
+            }
+            QLineEdit {
+                padding: 10px;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                background-color: white;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #4dabf7;
+            }
+            QPushButton {
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QListWidget {
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                background-color: white;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #e9ecef;
+            }
+            QListWidget::item:selected {
+                background-color: #e7f5ff;
+                color: #1971c2;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        title_label = QLabel("⚙ 忽略规则设置")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #495057;")
+        layout.addWidget(title_label)
+        
+        hint_label = QLabel("添加需要忽略的文件或目录规则，例如: node_modules/, .log, __pycache__/")
+        hint_label.setStyleSheet("color: #868e96; font-size: 12px;")
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+        
+        self.rule_list = QListWidget()
+        self.rule_list.setMinimumHeight(150)
+        for rule in self.rules:
+            self.rule_list.addItem(rule)
+        layout.addWidget(self.rule_list)
+        
+        add_layout = QHBoxLayout()
+        self.rule_input = QLineEdit()
+        self.rule_input.setPlaceholderText("输入规则，如: node_modules/ 或 .log")
+        self.rule_input.returnPressed.connect(self._add_rule)
+        add_layout.addWidget(self.rule_input)
+        
+        add_btn = QPushButton("添加")
+        add_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #339af0;
+                color: white;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #228be6;
+            }
+        """)
+        add_btn.setFixedWidth(80)
+        add_btn.clicked.connect(self._add_rule)
+        add_layout.addWidget(add_btn)
+        layout.addLayout(add_layout)
+        
+        del_btn = QPushButton("删除选中规则")
+        del_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fa5252;
+                color: white;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #f03e3e;
+            }
+        """)
+        del_btn.clicked.connect(self._delete_rule)
+        layout.addWidget(del_btn)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        confirm_btn = QPushButton("确定")
+        confirm_btn.setFixedSize(100, 36)
+        confirm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #40c057;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #37b24d;
+            }
+        """)
+        confirm_btn.clicked.connect(self.accept)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setFixedSize(100, 36)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #dee2e6;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(confirm_btn)
+        btn_layout.addSpacing(12)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+    
+    def _add_rule(self):
+        rule = self.rule_input.text().strip()
+        if rule and rule not in self.rules:
+            self.rules.append(rule)
+            self.rule_list.addItem(rule)
+            self.rule_input.clear()
+    
+    def _delete_rule(self):
+        current_item = self.rule_list.currentItem()
+        if current_item:
+            row = self.rule_list.row(current_item)
+            self.rule_list.takeItem(row)
+            self.rules.pop(row)
+    
+    def get_rules(self):
+        return self.rules
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("文件同步器 - WinToGo & 本地")
+        self.setWindowTitle("文件同步器")
         self.setMinimumSize(1000, 700)
         
         self.wintogo_files = {}
@@ -524,6 +709,9 @@ class MainWindow(QMainWindow):
         self.diff_results = []
         self.conflict_decisions = {}
         self.auto_scan_timer = None
+        self.ignore_rules = []
+        self.sync_start_time = None
+        self.sync_transferred_bytes = 0
         
         self._init_ui()
         self._load_saved_paths()
@@ -605,6 +793,13 @@ class MainWindow(QMainWindow):
         self.sync_btn.setEnabled(False)
         btn_layout.addWidget(self.sync_btn)
         
+        self.ignore_btn = QPushButton("⚙ 忽略规则")
+        self.ignore_btn.setObjectName("browseBtn")
+        self.ignore_btn.setFixedHeight(44)
+        self.ignore_btn.setFixedWidth(120)
+        self.ignore_btn.clicked.connect(self._show_ignore_dialog)
+        btn_layout.addWidget(self.ignore_btn)
+        
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
@@ -648,18 +843,36 @@ class MainWindow(QMainWindow):
         config = load_config()
         wintogo_path = config.get('wintogo_dir', '')
         local_path = config.get('local_dir', '')
+        ignore_rules = config.get('ignore_rules', [])
         
         if wintogo_path:
             self.wintogo_edit.setText(wintogo_path)
         if local_path:
             self.local_edit.setText(local_path)
+        self.ignore_rules = ignore_rules
     
     def _save_paths(self):
         config = {
             'wintogo_dir': self.wintogo_edit.text().strip(),
-            'local_dir': self.local_edit.text().strip()
+            'local_dir': self.local_edit.text().strip(),
+            'ignore_rules': self.ignore_rules
         }
         save_config(config)
+    
+    def _show_ignore_dialog(self):
+        dialog = IgnoreRulesDialog(self.ignore_rules, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.ignore_rules = dialog.get_rules()
+            self._save_paths()
+            self.status_label.setText(f"✅ 已保存 {len(self.ignore_rules)} 条忽略规则")
+            self.status_label.setStyleSheet("color: #2f9e44; font-size: 13px; padding: 4px 0;")
+            
+            wintogo_dir = self.wintogo_edit.text().strip()
+            local_dir = self.local_edit.text().strip()
+            if wintogo_dir and local_dir:
+                if os.path.exists(wintogo_dir) and os.path.exists(local_dir):
+                    if wintogo_dir != local_dir:
+                        self._start_scan()
     
     def _on_path_changed(self):
         if self.auto_scan_timer:
@@ -723,7 +936,7 @@ class MainWindow(QMainWindow):
         self.diff_results = []
         self.conflict_decisions = {}
         
-        self.scan_worker = ScanWorker(wintogo_dir, local_dir)
+        self.scan_worker = ScanWorker(wintogo_dir, local_dir, self.ignore_rules)
         self.scan_worker.progress.connect(self._on_scan_progress)
         self.scan_worker.finished.connect(self._on_scan_finished)
         self.scan_worker.start()
@@ -769,10 +982,10 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"⚠️ 发现 {len(sync_needed)} 个差异项，其中 {len(conflicts)} 个冲突需要处理")
                 self.status_label.setStyleSheet("color: #e67700; font-size: 13px; padding: 4px 0;")
             else:
-                self.status_label.setText(f"📋 发现 {len(sync_needed)} 个差异项，将自动同步")
+                self.status_label.setText(f"📋 发现 {len(sync_needed)} 个差异项，正在等待操作")
                 self.status_label.setStyleSheet("color: #2f9e44; font-size: 13px; padding: 4px 0;")
         else:
-            self.status_label.setText("✅ 两个目录完全一致，无需同步")
+            self.status_label.setText("✅ 未发现差异项，无需同步")
             self.status_label.setStyleSheet("color: #2f9e44; font-size: 13px; padding: 4px 0;")
     
     def _update_table(self):
@@ -919,9 +1132,12 @@ class MainWindow(QMainWindow):
         self.scan_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("同步中... %p%")
+        self.progress_bar.setFormat("同步中... 准备中")
         self.status_label.setText("📤 正在同步文件...")
         self.status_label.setStyleSheet("color: #1971c2; font-size: 13px; padding: 4px 0;")
+        
+        self.sync_start_time = time.time()
+        self.sync_transferred_bytes = 0
         
         self.sync_worker = SyncWorker(
             self.diff_results, self.conflict_decisions,
@@ -931,10 +1147,50 @@ class MainWindow(QMainWindow):
         self.sync_worker.finished.connect(self._on_sync_finished)
         self.sync_worker.start()
     
-    def _on_sync_progress(self, current: int, total: int, filename: str):
+    def _format_size(self, size: int) -> str:
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.2f} GB"
+    
+    def _format_time(self, seconds: float) -> str:
+        if seconds < 60:
+            return f"{int(seconds)}秒"
+        elif seconds < 3600:
+            minutes = int(seconds / 60)
+            secs = int(seconds % 60)
+            return f"{minutes}分{secs}秒"
+        else:
+            hours = int(seconds / 3600)
+            minutes = int((seconds % 3600) / 60)
+            return f"{hours}时{minutes}分"
+    
+    def _on_sync_progress(self, transferred: int, total: int, file_transferred: int, file_size: int, filename: str):
         if total > 0:
-            self.progress_bar.setValue(int(current / total * 100))
-        self.status_label.setText(f"📤 正在同步: {filename}")
+            percent = int(transferred / total * 100)
+            self.progress_bar.setValue(percent)
+            
+            elapsed = time.time() - self.sync_start_time if self.sync_start_time else 0
+            if elapsed > 0 and transferred > 0:
+                speed = transferred / elapsed
+                
+                if speed > 0:
+                    remaining_bytes = total - transferred
+                    remaining_time = remaining_bytes / speed
+                    speed_str = self._format_size(speed) + "/s"
+                    time_str = self._format_time(remaining_time)
+                    self.progress_bar.setFormat(f"同步中 {percent}% | {speed_str} | 剩余 {time_str}")
+                else:
+                    self.progress_bar.setFormat(f"同步中 {percent}%")
+            else:
+                self.progress_bar.setFormat(f"同步中 {percent}%")
+        
+        short_name = filename if len(filename) <= 50 else "..." + filename[-47:]
+        self.status_label.setText(f"📤 正在同步: {short_name}")
     
     def _on_sync_finished(self, success_count: int, fail_count: int, skip_count: int):
         self.progress_bar.setVisible(False)

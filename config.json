@@ -1,4 +1,5 @@
 {
-  "wintogo_dir": "C:/Items/DeskTop/1",
-  "local_dir": "C:/Items/DeskTop/2"
+  "wintogo_dir": "C:/SyncHub/DeskTop/1",
+  "local_dir": "C:/SyncHub/DeskTop/2",
+  "ignore_rules": []
 }
