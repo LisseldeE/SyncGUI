@@ -701,7 +701,7 @@ class IgnoreRulesDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("文件同步器")
+        self.setWindowTitle("SyncGUI")
         self.setMinimumSize(1000, 700)
         
         self.wintogo_files = {}
@@ -724,7 +724,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         
         header_layout = QHBoxLayout()
-        title_label = QLabel("📁 文件同步器")
+        title_label = QLabel("📁 SyncGUI")
         title_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #212529;")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
