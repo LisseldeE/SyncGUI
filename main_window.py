@@ -20,7 +20,13 @@ from sync_core import (
 )
 
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(sys.argv[0]))
+
+
+CONFIG_FILE = os.path.join(get_app_dir(), 'config.json')
 
 
 STYLESHEET = """
