@@ -40,6 +40,7 @@ class FileStatus(Enum):
     LOCAL_ONLY = "local_only"
     SAME = "same"
     CONFLICT = "conflict"
+    MTIME_DIFF = "mtime_diff"
 
 
 @dataclass
@@ -69,7 +70,8 @@ def calculate_file_hash(file_path: str, chunk_size: int = 8192) -> str:
 def scan_directory(
     directory: str,
     progress_callback: Optional[Callable[[int, int], None]] = None,
-    ignore_rules: Optional[List[str]] = None
+    ignore_rules: Optional[List[str]] = None,
+    progress_interval: int = 100
 ) -> Dict[str, FileInfo]:
     files = {}
     directory = os.path.abspath(directory)
@@ -113,33 +115,39 @@ def scan_directory(
         
         return False
     
-    all_files = []
+    total = 0
+    processed = 0
+    last_progress_update = 0
+    
+    for root, _, filenames in os.walk(directory):
+        total += len(filenames)
+    
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
             full_path = os.path.join(root, filename)
-            all_files.append(full_path)
-    
-    total = len(all_files)
-    for idx, full_path in enumerate(all_files):
-        try:
-            relative_path = os.path.relpath(full_path, directory)
+            processed += 1
             
-            if should_ignore(relative_path):
-                if progress_callback:
-                    progress_callback(idx + 1, total)
-                continue
+            try:
+                relative_path = os.path.relpath(full_path, directory)
+                
+                if should_ignore(relative_path):
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+                
+                stat = os.stat(full_path)
+                files[relative_path] = FileInfo(
+                    relative_path=relative_path,
+                    size=stat.st_size,
+                    mtime=stat.st_mtime
+                )
+            except (OSError, PermissionError):
+                pass
             
-            stat = os.stat(full_path)
-            files[relative_path] = FileInfo(
-                relative_path=relative_path,
-                size=stat.st_size,
-                mtime=stat.st_mtime
-            )
-        except (OSError, PermissionError):
-            continue
-        
-        if progress_callback:
-            progress_callback(idx + 1, total)
+            if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                progress_callback(processed, total)
+                last_progress_update = processed
     
     return files
 
@@ -149,13 +157,17 @@ def compare_files(
     local_files: Dict[str, FileInfo],
     wintogo_dir: str,
     local_dir: str,
-    progress_callback: Optional[Callable[[int, int], None]] = None
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_interval: int = 100
 ) -> List[DiffResult]:
     results = []
     all_paths = set(wintogo_files.keys()) | set(local_files.keys())
     total = len(all_paths)
+    processed = 0
+    last_progress_update = 0
     
-    for idx, path in enumerate(all_paths):
+    for path in all_paths:
+        processed += 1
         wintogo_info = wintogo_files.get(path)
         local_info = local_files.get(path)
         
@@ -173,15 +185,17 @@ def compare_files(
             ))
         else:
             if wintogo_info.size != local_info.size:
-                wintogo_hash = calculate_file_hash(os.path.join(wintogo_dir, path))
-                local_hash = calculate_file_hash(os.path.join(local_dir, path))
-                wintogo_info.hash = wintogo_hash
-                local_info.hash = local_hash
-                
-                if wintogo_hash != local_hash:
+                results.append(DiffResult(
+                    relative_path=path,
+                    status=FileStatus.CONFLICT,
+                    wintogo_info=wintogo_info,
+                    local_info=local_info
+                ))
+            else:
+                if abs(wintogo_info.mtime - local_info.mtime) > 1:
                     results.append(DiffResult(
                         relative_path=path,
-                        status=FileStatus.CONFLICT,
+                        status=FileStatus.MTIME_DIFF,
                         wintogo_info=wintogo_info,
                         local_info=local_info
                     ))
@@ -192,16 +206,10 @@ def compare_files(
                         wintogo_info=wintogo_info,
                         local_info=local_info
                     ))
-            else:
-                results.append(DiffResult(
-                    relative_path=path,
-                    status=FileStatus.SAME,
-                    wintogo_info=wintogo_info,
-                    local_info=local_info
-                ))
         
-        if progress_callback:
-            progress_callback(idx + 1, total)
+        if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+            progress_callback(processed, total)
+            last_progress_update = processed
     
     return results
 
@@ -215,6 +223,23 @@ def copy_file(source_path: str, dest_path: str) -> bool:
         return True
     except (OSError, PermissionError) as e:
         print(f"Error copying {source_path} to {dest_path}: {e}")
+        return False
+
+
+def delete_file(file_path: str) -> bool:
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        parent = os.path.dirname(file_path)
+        while parent and len(parent) > 3:
+            try:
+                os.rmdir(parent)
+                parent = os.path.dirname(parent)
+            except OSError:
+                break
+        return True
+    except (OSError, PermissionError) as e:
+        print(f"Error deleting {file_path}: {e}")
         return False
 
 
@@ -310,13 +335,32 @@ def sync_file(
     if diff.status == FileStatus.WINTOGO_ONLY:
         if direction == "to_local":
             return copy_file_with_progress(wintogo_path, local_path, progress_callback)
+        elif direction == "delete_wintogo":
+            return delete_file(wintogo_path)
     elif diff.status == FileStatus.LOCAL_ONLY:
         if direction == "to_wintogo":
             return copy_file_with_progress(local_path, wintogo_path, progress_callback)
+        elif direction == "delete_local":
+            return delete_file(local_path)
     elif diff.status == FileStatus.CONFLICT:
         if direction == "wintogo_to_local":
             return copy_file_with_progress(wintogo_path, local_path, progress_callback)
         elif direction == "local_to_wintogo":
             return copy_file_with_progress(local_path, wintogo_path, progress_callback)
+    elif diff.status == FileStatus.MTIME_DIFF:
+        if direction == "wintogo_to_local":
+            try:
+                shutil.copystat(wintogo_path, local_path)
+                return True
+            except (OSError, PermissionError) as e:
+                print(f"Error copying timestamp from {wintogo_path} to {local_path}: {e}")
+                return False
+        elif direction == "local_to_wintogo":
+            try:
+                shutil.copystat(local_path, wintogo_path)
+                return True
+            except (OSError, PermissionError) as e:
+                print(f"Error copying timestamp from {local_path} to {wintogo_path}: {e}")
+                return False
     
     return False

@@ -1,5 +1,9 @@
 {
-  "wintogo_dir": "C:/SyncHub/",
+  "wintogo_dir": "C:/SyncHub/DeskTop/1",
   "local_dir": "C:/SyncHub/DeskTop/2",
-  "ignore_rules": []
+  "ignore_rules": [],
+  "sync_rules": [
+    "Python/",
+    "Servers/"
+  ]
 }
