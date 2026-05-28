@@ -94,18 +94,16 @@ def scan_directory(
             
             if rule.endswith('/'):
                 dir_name = rule[:-1]
-                if normalized_path.startswith(dir_name + '/') or normalized_path.startswith(dir_name + '\\'):
+                if normalized_path.startswith(dir_name + '/'):
                     return True
-                parts = normalized_path.split('/')
-                for i, part in enumerate(parts[:-1]):
-                    if part == dir_name:
-                        return True
+                if normalized_path == dir_name:
+                    return True
             elif rule.startswith('.'):
                 ext = rule
                 if normalized_path.endswith(ext):
                     if '/' in rule:
                         dir_part = rule.rsplit('/', 1)[0]
-                        if normalized_path.startswith(dir_part + '/') or normalized_path.startswith(dir_part + '\\'):
+                        if normalized_path.startswith(dir_part + '/'):
                             return True
                     else:
                         return True

@@ -2088,7 +2088,10 @@ class MainWindow(QMainWindow):
                 elif diff.local_info and diff.local_info.is_dir:
                     is_dir = True
                 subdir = self._get_subdir_for_rule(diff.relative_path, is_dir)
-                rule_diffs[subdir].append(diff)
+                if subdir:
+                    rule_diffs[subdir].append(diff)
+                else:
+                    other_diffs.append(diff)
             else:
                 other_diffs.append(diff)
         
