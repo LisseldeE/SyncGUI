@@ -308,7 +308,7 @@ class ConflictDialog(QDialog):
         self.result_direction = None
         self.apply_to_dir = False
         self.same_dir_count = same_dir_count
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(500)
         
         self.wintogo_newer = diff.wintogo_info.mtime > diff.local_info.mtime
         self._init_ui(diff)
@@ -492,18 +492,15 @@ class ConflictDialog(QDialog):
         cancel_btn.setFixedSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #fa5252;
-                color: white;
-                border: none;
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #f03e3e;
-            }
-            QPushButton:pressed {
-                background-color: #e03131;
+                background-color: #dee2e6;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -543,7 +540,7 @@ class OnlyOneSideDialog(QDialog):
         self.result_direction = None
         self.apply_to_dir = False
         self.same_dir_count = same_dir_count
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(500)
         self._init_ui()
     
     def _init_ui(self):
@@ -676,18 +673,15 @@ class OnlyOneSideDialog(QDialog):
         cancel_btn.setFixedSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #fa5252;
-                color: white;
-                border: none;
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #f03e3e;
-            }
-            QPushButton:pressed {
-                background-color: #e03131;
+                background-color: #dee2e6;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -736,7 +730,7 @@ class MtimeDiffDialog(QDialog):
         self.result_direction = None
         self.apply_to_dir = False
         self.same_dir_count = same_dir_count
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(500)
         self._init_ui()
     
     def _init_ui(self):
@@ -775,12 +769,12 @@ class MtimeDiffDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
         
-        title_label = QLabel("⏰ 文件时间戳不同")
+        title_label = QLabel("⏰ 文件时间不同")
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fd7e14;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
         
-        hint_label = QLabel("文件内容相同，但修改时间不同")
+        hint_label = QLabel("文件大小相同，但修改时间不同")
         hint_label.setStyleSheet("color: #868e96; font-size: 12px;")
         hint_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(hint_label)
@@ -869,19 +863,24 @@ class MtimeDiffDialog(QDialog):
         self.button_group = QButtonGroup(self)
         
         self.rb_newer = QRadioButton()
+        self.rb_older = QRadioButton()
         self.rb_skip = QRadioButton("⏭️ 跳过（保持现状）")
         
         if self.wintogo_newer:
-            self.rb_newer.setText("✨ 同步最新时间到本地")
+            self.rb_newer.setText("✨ 用WinToGo（较新）覆盖本地")
+            self.rb_older.setText("📥 用本地（较旧）覆盖WinToGo")
         else:
-            self.rb_newer.setText("✨ 同步最新时间到WinToGo")
+            self.rb_newer.setText("✨ 用本地（较新）覆盖WinToGo")
+            self.rb_older.setText("📥 用WinToGo（较旧）覆盖本地")
         
         self.rb_newer.setChecked(True)
         
         self.button_group.addButton(self.rb_newer, 0)
-        self.button_group.addButton(self.rb_skip, 1)
+        self.button_group.addButton(self.rb_older, 1)
+        self.button_group.addButton(self.rb_skip, 2)
         
         layout.addWidget(self.rb_newer)
+        layout.addWidget(self.rb_older)
         layout.addWidget(self.rb_skip)
         
         if self.same_dir_count > 0:
@@ -919,18 +918,15 @@ class MtimeDiffDialog(QDialog):
         cancel_btn.setFixedSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #fa5252;
-                color: white;
-                border: none;
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #f03e3e;
-            }
-            QPushButton:pressed {
-                background-color: #e03131;
+                background-color: #dee2e6;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -948,6 +944,11 @@ class MtimeDiffDialog(QDialog):
                 return "wintogo_to_local"
             else:
                 return "local_to_wintogo"
+        elif checked_id == 1:
+            if self.wintogo_newer:
+                return "local_to_wintogo"
+            else:
+                return "wintogo_to_local"
         else:
             return "skip"
     
@@ -961,7 +962,7 @@ class IgnoreRulesDialog(QDialog):
     def __init__(self, rules, parent=None):
         super().__init__(parent)
         self.setWindowTitle("忽略规则设置")
-        self.setMinimumSize(450, 400)
+        self.setMinimumSize(500, 400)
         self.rules = rules.copy()
         self._init_ui()
     
@@ -984,7 +985,7 @@ class IgnoreRulesDialog(QDialog):
                 border: 2px solid #4dabf7;
             }
             QPushButton {
-                padding: 8px 16px;
+                padding: 10px 24px;
                 border-radius: 6px;
                 font-size: 13px;
                 font-weight: 500;
@@ -1063,8 +1064,8 @@ class IgnoreRulesDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton("确定")
-        confirm_btn.setFixedSize(100, 36)
+        confirm_btn = QPushButton("确认")
+        confirm_btn.setFixedSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
                 background-color: #40c057;
@@ -1081,7 +1082,7 @@ class IgnoreRulesDialog(QDialog):
         confirm_btn.clicked.connect(self.accept)
         
         cancel_btn = QPushButton("取消")
-        cancel_btn.setFixedSize(100, 36)
+        cancel_btn.setFixedSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
                 background-color: #e9ecef;
@@ -1139,17 +1140,17 @@ class DirSyncDialog(QDialog):
                 color: #495057;
             }
             QRadioButton {
-                padding: 12px;
-                font-size: 14px;
+                padding: 10px;
+                font-size: 13px;
             }
             QRadioButton::indicator {
-                width: 20px;
-                height: 20px;
+                width: 18px;
+                height: 18px;
             }
             QPushButton {
                 padding: 10px 24px;
                 border-radius: 6px;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 500;
             }
         """)
@@ -1159,7 +1160,7 @@ class DirSyncDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         
         title_label = QLabel("📁 目录差异")
-        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #1971c2;")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #1971c2;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
         
@@ -1259,16 +1260,19 @@ class DirSyncDialog(QDialog):
         
         self.rb_wintogo = QRadioButton("📤 WinToGo → 本地（使用WinToGo版本覆盖本地）")
         self.rb_local = QRadioButton("📥 本地 → WinToGo（使用本地版本覆盖WinToGo）")
+        self.rb_delete_both = QRadioButton("🗑️ 删除两端此目录（清理弃置项目）")
         self.rb_skip = QRadioButton("⏭️ 跳过此目录")
         
         self.rb_wintogo.setChecked(True)
         
         self.button_group.addButton(self.rb_wintogo, 0)
         self.button_group.addButton(self.rb_local, 1)
-        self.button_group.addButton(self.rb_skip, 2)
+        self.button_group.addButton(self.rb_delete_both, 2)
+        self.button_group.addButton(self.rb_skip, 3)
         
         layout.addWidget(self.rb_wintogo)
         layout.addWidget(self.rb_local)
+        layout.addWidget(self.rb_delete_both)
         layout.addWidget(self.rb_skip)
         
         layout.addSpacing(8)
@@ -1277,7 +1281,7 @@ class DirSyncDialog(QDialog):
         btn_layout.addStretch()
         
         confirm_btn = QPushButton("确认")
-        confirm_btn.setFixedSize(100, 40)
+        confirm_btn.setFixedSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
                 background-color: #40c057;
@@ -1294,18 +1298,18 @@ class DirSyncDialog(QDialog):
         confirm_btn.clicked.connect(self.accept)
         
         cancel_btn = QPushButton("取消")
-        cancel_btn.setFixedSize(100, 40)
+        cancel_btn.setFixedSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #fa5252;
-                color: white;
-                border: none;
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #f03e3e;
+                background-color: #dee2e6;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -1322,6 +1326,8 @@ class DirSyncDialog(QDialog):
             return "wintogo_to_local"
         elif checked_id == 1:
             return "local_to_wintogo"
+        elif checked_id == 2:
+            return "delete_both"
         else:
             return "skip"
 
@@ -1330,7 +1336,7 @@ class SyncRulesDialog(QDialog):
     def __init__(self, rules, parent=None):
         super().__init__(parent)
         self.setWindowTitle("同步规则设置")
-        self.setMinimumSize(500, 450)
+        self.setMinimumSize(500, 400)
         self.rules = rules.copy()
         self._init_ui()
     
@@ -1353,7 +1359,7 @@ class SyncRulesDialog(QDialog):
                 border: 2px solid #4dabf7;
             }
             QPushButton {
-                padding: 8px 16px;
+                padding: 10px 24px;
                 border-radius: 6px;
                 font-size: 13px;
                 font-weight: 500;
@@ -1432,8 +1438,8 @@ class SyncRulesDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton("确定")
-        confirm_btn.setFixedSize(100, 36)
+        confirm_btn = QPushButton("确认")
+        confirm_btn.setFixedSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
                 background-color: #40c057;
@@ -1450,7 +1456,7 @@ class SyncRulesDialog(QDialog):
         confirm_btn.clicked.connect(self.accept)
         
         cancel_btn = QPushButton("取消")
-        cancel_btn.setFixedSize(100, 36)
+        cancel_btn.setFixedSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
                 background-color: #e9ecef;
@@ -1848,14 +1854,24 @@ class MainWindow(QMainWindow):
             
             wintogo_size = ""
             if diff.wintogo_info:
-                wintogo_size = self._format_size(diff.wintogo_info.size)
+                if diff.wintogo_info.is_symlink:
+                    wintogo_size = "[链接]"
+                elif diff.wintogo_info.is_dir:
+                    wintogo_size = "[目录]"
+                else:
+                    wintogo_size = self._format_size(diff.wintogo_info.size)
             wintogo_item = QTableWidgetItem(wintogo_size)
             wintogo_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 2, wintogo_item)
             
             local_size = ""
             if diff.local_info:
-                local_size = self._format_size(diff.local_info.size)
+                if diff.local_info.is_symlink:
+                    local_size = "[链接]"
+                elif diff.local_info.is_dir:
+                    local_size = "[目录]"
+                else:
+                    local_size = self._format_size(diff.local_info.size)
             local_item = QTableWidgetItem(local_size)
             local_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 3, local_item)
@@ -1980,6 +1996,17 @@ class MainWindow(QMainWindow):
                             self.conflict_decisions[diff.relative_path] = "local_to_wintogo"
                         else:
                             self.conflict_decisions[diff.relative_path] = "skip"
+                    elif direction == "delete_both":
+                        if diff.status == FileStatus.WINTOGO_ONLY:
+                            self.conflict_decisions[diff.relative_path] = "delete_wintogo"
+                        elif diff.status == FileStatus.LOCAL_ONLY:
+                            self.conflict_decisions[diff.relative_path] = "delete_local"
+                        elif diff.status == FileStatus.CONFLICT:
+                            self.conflict_decisions[diff.relative_path] = "delete_both"
+                        elif diff.status == FileStatus.MTIME_DIFF:
+                            self.conflict_decisions[diff.relative_path] = "delete_both"
+                        else:
+                            self.conflict_decisions[diff.relative_path] = "skip"
                     else:
                         self.conflict_decisions[diff.relative_path] = "skip"
             else:
@@ -2094,7 +2121,7 @@ class MainWindow(QMainWindow):
         if conflict_count > 0:
             msg += f"⚠️ 冲突处理: {conflict_count} 个\n"
         if mtime_count > 0:
-            msg += f"⏰ 时间同步: {mtime_count} 个\n"
+            msg += f"⏰ 异步文件: {mtime_count} 个\n"
         if skip_count > 0:
             msg += f"⏭️ 跳过: {skip_count} 个\n"
         msg += "\n此操作不可撤销！"
