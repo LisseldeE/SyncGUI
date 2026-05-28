@@ -34,6 +34,48 @@ if sys.platform == 'win32':
     PROGRESS_CANCEL = 1
     PROGRESS_STOP = 2
     PROGRESS_QUIET = 3
+    
+    FILE_ATTRIBUTE_READONLY = 0x00000001
+    FILE_ATTRIBUTE_HIDDEN = 0x00000002
+    FILE_ATTRIBUTE_SYSTEM = 0x00000004
+    FILE_ATTRIBUTE_ARCHIVE = 0x00000020
+    FILE_ATTRIBUTE_NORMAL = 0x00000080
+    FILE_ATTRIBUTE_TEMPORARY = 0x00000100
+    FILE_ATTRIBUTE_OFFLINE = 0x00001000
+    FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 0x00002000
+    FILE_ATTRIBUTE_NO_SCRUB_DATA = 0x00020000
+    
+    SYNC_ATTRIBUTES = (
+        FILE_ATTRIBUTE_READONLY |
+        FILE_ATTRIBUTE_HIDDEN |
+        FILE_ATTRIBUTE_SYSTEM |
+        FILE_ATTRIBUTE_ARCHIVE |
+        FILE_ATTRIBUTE_TEMPORARY |
+        FILE_ATTRIBUTE_OFFLINE |
+        FILE_ATTRIBUTE_NOT_CONTENT_INDEXED |
+        FILE_ATTRIBUTE_NO_SCRUB_DATA
+    )
+    
+    def get_file_attributes(file_path: str) -> int:
+        attrs = kernel32.GetFileAttributesW(file_path)
+        if attrs == 0xFFFFFFFF:
+            return FILE_ATTRIBUTE_NORMAL
+        return attrs
+    
+    def set_file_attributes(file_path: str, attributes: int) -> bool:
+        result = kernel32.SetFileAttributesW(file_path, attributes)
+        return result != 0
+    
+    def sync_file_attributes(source_path: str, dest_path: str) -> bool:
+        source_attrs = get_file_attributes(source_path)
+        sync_attrs = source_attrs & SYNC_ATTRIBUTES
+        if sync_attrs == 0:
+            sync_attrs = FILE_ATTRIBUTE_NORMAL
+        return set_file_attributes(dest_path, sync_attrs)
+    
+    def sync_dir_attributes(source_path: str, dest_path: str) -> bool:
+        shutil.copystat(source_path, dest_path)
+        return sync_file_attributes(source_path, dest_path)
 
 
 class FileStatus(Enum):
@@ -93,11 +135,18 @@ def scan_directory(
             rule = rule.replace('\\', '/')
             
             if rule.endswith('/'):
-                dir_name = rule[:-1]
-                if normalized_path.startswith(dir_name + '/'):
-                    return True
-                if normalized_path == dir_name:
-                    return True
+                if rule.startswith('**/'):
+                    dir_name = rule[3:-1]
+                    parts = normalized_path.split('/')
+                    for part in parts:
+                        if part == dir_name:
+                            return True
+                else:
+                    dir_name = rule[:-1]
+                    if normalized_path.startswith(dir_name + '/'):
+                        return True
+                    if normalized_path == dir_name:
+                        return True
             elif rule.startswith('.'):
                 ext = rule
                 if normalized_path.endswith(ext):
@@ -409,6 +458,8 @@ def copy_file_with_progress(
             result = _copy_file_fallback(source_path, dest_path, progress_callback, chunk_size)
         
         if result:
+            if sys.platform == 'win32':
+                sync_file_attributes(source_path, dest_path)
             return True
         
         if attempt < max_retries - 1:
@@ -478,6 +529,8 @@ def _copy_file_fallback(
                         progress_callback(copied, file_size)
         
         shutil.copystat(source_path, dest_path)
+        if sys.platform == 'win32':
+            sync_file_attributes(source_path, dest_path)
         return True
     except (OSError, PermissionError) as e:
         print(f"Error copying {source_path} to {dest_path}: {e}")
@@ -600,7 +653,7 @@ def sync_file(
                     elif os.path.isdir(local_path):
                         shutil.rmtree(local_path)
                     os.makedirs(local_path, exist_ok=True)
-                    shutil.copystat(wintogo_path, local_path)
+                    sync_dir_attributes(wintogo_path, local_path)
                 else:
                     if os.path.isdir(local_path):
                         shutil.rmtree(local_path)
@@ -617,7 +670,7 @@ def sync_file(
                     elif os.path.isdir(wintogo_path):
                         shutil.rmtree(wintogo_path)
                     os.makedirs(wintogo_path, exist_ok=True)
-                    shutil.copystat(local_path, wintogo_path)
+                    sync_dir_attributes(local_path, wintogo_path)
                 else:
                     if os.path.isdir(wintogo_path):
                         shutil.rmtree(wintogo_path)
@@ -647,7 +700,7 @@ def sync_file(
             if direction == "to_local":
                 try:
                     os.makedirs(local_path, exist_ok=True)
-                    shutil.copystat(wintogo_path, local_path)
+                    sync_dir_attributes(wintogo_path, local_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error creating directory {local_path}: {e}")
@@ -663,7 +716,7 @@ def sync_file(
             if direction == "to_wintogo":
                 try:
                     os.makedirs(wintogo_path, exist_ok=True)
-                    shutil.copystat(local_path, wintogo_path)
+                    sync_dir_attributes(local_path, wintogo_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error creating directory {wintogo_path}: {e}")
@@ -678,17 +731,17 @@ def sync_file(
         elif diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
             if direction == "wintogo_to_local":
                 try:
-                    shutil.copystat(wintogo_path, local_path)
+                    sync_dir_attributes(wintogo_path, local_path)
                     return True
                 except (OSError, PermissionError) as e:
-                    print(f"Error copying directory timestamp from {wintogo_path} to {local_path}: {e}")
+                    print(f"Error copying directory attributes from {wintogo_path} to {local_path}: {e}")
                     return False
             elif direction == "local_to_wintogo":
                 try:
-                    shutil.copystat(local_path, wintogo_path)
+                    sync_dir_attributes(local_path, wintogo_path)
                     return True
                 except (OSError, PermissionError) as e:
-                    print(f"Error copying directory timestamp from {local_path} to {wintogo_path}: {e}")
+                    print(f"Error copying directory attributes from {local_path} to {wintogo_path}: {e}")
                     return False
             elif direction == "delete_both":
                 try:
