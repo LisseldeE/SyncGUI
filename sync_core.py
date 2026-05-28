@@ -270,7 +270,14 @@ def compare_files(
                 local_info=local_info
             ))
         else:
-            if wintogo_info.size != local_info.size:
+            if wintogo_info.is_dir != local_info.is_dir:
+                results.append(DiffResult(
+                    relative_path=path,
+                    status=FileStatus.CONFLICT,
+                    wintogo_info=wintogo_info,
+                    local_info=local_info
+                ))
+            elif wintogo_info.size != local_info.size:
                 results.append(DiffResult(
                     relative_path=path,
                     status=FileStatus.CONFLICT,
@@ -542,7 +549,27 @@ def sync_file(
                     print(f"Error deleting symlink {local_path}: {e}")
                     return False
         elif diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
-            if direction == "delete_both":
+            if direction == "wintogo_to_local":
+                try:
+                    if os.path.exists(local_path) or os.path.islink(local_path):
+                        os.remove(local_path)
+                    if diff.wintogo_info and diff.wintogo_info.symlink_target:
+                        os.symlink(diff.wintogo_info.symlink_target, local_path)
+                    return True
+                except (OSError, PermissionError) as e:
+                    print(f"Error syncing symlink from WinToGo to local: {e}")
+                    return False
+            elif direction == "local_to_wintogo":
+                try:
+                    if os.path.exists(wintogo_path) or os.path.islink(wintogo_path):
+                        os.remove(wintogo_path)
+                    if diff.local_info and diff.local_info.symlink_target:
+                        os.symlink(diff.local_info.symlink_target, wintogo_path)
+                    return True
+                except (OSError, PermissionError) as e:
+                    print(f"Error syncing symlink from local to WinToGo: {e}")
+                    return False
+            elif direction == "delete_both":
                 try:
                     if os.path.islink(wintogo_path) or os.path.exists(wintogo_path):
                         os.remove(wintogo_path) if os.path.islink(wintogo_path) else shutil.rmtree(wintogo_path)
@@ -555,10 +582,67 @@ def sync_file(
         return True
     
     is_dir = False
+    is_dir_conflict = False
     if diff.wintogo_info and diff.wintogo_info.is_dir:
         is_dir = True
     elif diff.local_info and diff.local_info.is_dir:
         is_dir = True
+    
+    if diff.status == FileStatus.CONFLICT:
+        if diff.wintogo_info and diff.local_info:
+            if diff.wintogo_info.is_dir != diff.local_info.is_dir:
+                is_dir_conflict = True
+    
+    if is_dir_conflict:
+        if direction == "wintogo_to_local":
+            try:
+                if diff.wintogo_info.is_dir:
+                    if os.path.isfile(local_path):
+                        os.remove(local_path)
+                    elif os.path.isdir(local_path):
+                        shutil.rmtree(local_path)
+                    os.makedirs(local_path, exist_ok=True)
+                    shutil.copystat(wintogo_path, local_path)
+                else:
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path)
+                    return copy_file_with_progress(wintogo_path, local_path, progress_callback)
+                return True
+            except (OSError, PermissionError) as e:
+                print(f"Error resolving directory/file conflict: {e}")
+                return False
+        elif direction == "local_to_wintogo":
+            try:
+                if diff.local_info.is_dir:
+                    if os.path.isfile(wintogo_path):
+                        os.remove(wintogo_path)
+                    elif os.path.isdir(wintogo_path):
+                        shutil.rmtree(wintogo_path)
+                    os.makedirs(wintogo_path, exist_ok=True)
+                    shutil.copystat(local_path, wintogo_path)
+                else:
+                    if os.path.isdir(wintogo_path):
+                        shutil.rmtree(wintogo_path)
+                    return copy_file_with_progress(local_path, wintogo_path, progress_callback)
+                return True
+            except (OSError, PermissionError) as e:
+                print(f"Error resolving directory/file conflict: {e}")
+                return False
+        elif direction == "delete_both":
+            try:
+                if os.path.isdir(wintogo_path):
+                    shutil.rmtree(wintogo_path)
+                elif os.path.isfile(wintogo_path):
+                    os.remove(wintogo_path)
+                if os.path.isdir(local_path):
+                    shutil.rmtree(local_path)
+                elif os.path.isfile(local_path):
+                    os.remove(local_path)
+                return True
+            except (OSError, PermissionError) as e:
+                print(f"Error deleting directory/file conflict: {e}")
+                return False
+        return True
     
     if is_dir:
         if diff.status == FileStatus.WINTOGO_ONLY:
@@ -594,7 +678,21 @@ def sync_file(
                     print(f"Error deleting directory {local_path}: {e}")
                     return False
         elif diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
-            if direction == "delete_both":
+            if direction == "wintogo_to_local":
+                try:
+                    shutil.copystat(wintogo_path, local_path)
+                    return True
+                except (OSError, PermissionError) as e:
+                    print(f"Error copying directory timestamp from {wintogo_path} to {local_path}: {e}")
+                    return False
+            elif direction == "local_to_wintogo":
+                try:
+                    shutil.copystat(local_path, wintogo_path)
+                    return True
+                except (OSError, PermissionError) as e:
+                    print(f"Error copying directory timestamp from {local_path} to {wintogo_path}: {e}")
+                    return False
+            elif direction == "delete_both":
                 try:
                     if os.path.isdir(wintogo_path):
                         shutil.rmtree(wintogo_path)

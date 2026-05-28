@@ -1246,6 +1246,22 @@ class DirSyncDialog(QDialog):
         total_label.setStyleSheet("color: #868e96; font-size: 13px;")
         total_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(total_label)
+        detail_btn = QPushButton("📋 查看详细文件列表")
+        detail_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f8f9fa;
+                color: #495057;
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #e9ecef;
+            }
+        """)
+        detail_btn.clicked.connect(self._show_detail_list)
+        layout.addWidget(detail_btn)
         
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
@@ -1330,6 +1346,96 @@ class DirSyncDialog(QDialog):
             return "delete_both"
         else:
             return "skip"
+    
+    def _show_detail_list(self):
+        detail_dialog = QDialog(self)
+        detail_dialog.setWindowTitle("差异文件详情")
+        detail_dialog.setMinimumSize(600, 400)
+        detail_dialog.setStyleSheet("""
+            QDialog {
+                background-color: white;
+            }
+            QLabel {
+                color: #495057;
+            }
+        """)
+        
+        layout = QVBoxLayout(detail_dialog)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        title = QLabel(f"📁 {self.dir_path}")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1971c2;")
+        layout.addWidget(title)
+        
+        list_widget = QListWidget()
+        list_widget.setStyleSheet("""
+            QListWidget {
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                background-color: #f8f9fa;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 8px 12px;
+                border-bottom: 1px solid #e9ecef;
+            }
+            QListWidget::item:selected {
+                background-color: #e7f5ff;
+            }
+        """)
+        
+        for diff in self.diff_list:
+            status_text = ""
+            status_color = ""
+            
+            if diff.status == FileStatus.WINTOGO_ONLY:
+                status_text = "[WinToGo独有]"
+                status_color = "#1971c2"
+            elif diff.status == FileStatus.LOCAL_ONLY:
+                status_text = "[本地独有]"
+                status_color = "#2f9e44"
+            elif diff.status == FileStatus.CONFLICT:
+                status_text = "[冲突]"
+                status_color = "#e67700"
+            elif diff.status == FileStatus.MTIME_DIFF:
+                status_text = "[时间差异]"
+                status_color = "#fd7e14"
+            
+            file_name = os.path.basename(diff.relative_path)
+            rel_path = diff.relative_path
+            
+            item = QListWidgetItem(f"{status_text} {file_name}")
+            item.setData(Qt.UserRole, rel_path)
+            item.setForeground(QColor(status_color))
+            
+            list_widget.addItem(item)
+        
+        layout.addWidget(list_widget)
+        
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedSize(100, 36)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #dee2e6;
+            }
+        """)
+        close_btn.clicked.connect(detail_dialog.accept)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        detail_dialog.exec_()
 
 
 class SyncRulesDialog(QDialog):
@@ -1931,25 +2037,37 @@ class MainWindow(QMainWindow):
             rule_normalized = rule.replace('\\', '/')
             if not rule_normalized.endswith('/'):
                 rule_normalized += '/'
+            rule_base = rule_normalized.rstrip('/')
+            
+            if normalized == rule_base:
+                return True
             if normalized.startswith(rule_normalized):
                 return True
         return False
     
-    def _get_subdir_for_rule(self, relative_path: str) -> str:
+    def _get_subdir_for_rule(self, relative_path: str, is_dir: bool = False) -> str:
         normalized = relative_path.replace('\\', '/')
         for rule in self.sync_rules:
             rule_normalized = rule.replace('\\', '/')
             if not rule_normalized.endswith('/'):
                 rule_normalized += '/'
+            rule_base = rule_normalized.rstrip('/')
+            
+            if normalized == rule_base:
+                return ""
+            
             if normalized.startswith(rule_normalized):
                 remaining = normalized[len(rule_normalized):]
                 if not remaining:
-                    return rule_normalized.rstrip('/')
+                    return ""
+                
                 parts = remaining.split('/')
-                if len(parts) > 1 or (len(parts) == 1 and '.' not in parts[0]):
-                    return rule_normalized + parts[0] + '/'
+                first_subdir = parts[0]
+                
+                if is_dir or len(parts) > 1:
+                    return rule_normalized + first_subdir + '/'
                 else:
-                    return rule_normalized.rstrip('/')
+                    return ""
         return ""
     
     def _execute_sync(self):
@@ -1964,7 +2082,12 @@ class MainWindow(QMainWindow):
         
         for diff in sync_needed:
             if self._is_in_sync_rule(diff.relative_path):
-                subdir = self._get_subdir_for_rule(diff.relative_path)
+                is_dir = False
+                if diff.wintogo_info and diff.wintogo_info.is_dir:
+                    is_dir = True
+                elif diff.local_info and diff.local_info.is_dir:
+                    is_dir = True
+                subdir = self._get_subdir_for_rule(diff.relative_path, is_dir)
                 rule_diffs[subdir].append(diff)
             else:
                 other_diffs.append(diff)
@@ -2121,7 +2244,7 @@ class MainWindow(QMainWindow):
         if conflict_count > 0:
             msg += f"⚠️ 冲突处理: {conflict_count} 个\n"
         if mtime_count > 0:
-            msg += f"⏰ 异步文件: {mtime_count} 个\n"
+            msg += f"⏰ 时间差异: {mtime_count} 个\n"
         if skip_count > 0:
             msg += f"⏭️ 跳过: {skip_count} 个\n"
         msg += "\n此操作不可撤销！"
