@@ -2,6 +2,14 @@
 
 A simple and efficient bidirectional file synchronization tool between local storage and removable media.
 
+**Version**: SyncGUI_R9
+
+## Author
+
+- **Author**: Lisselde_E
+- **GitHub**: [https://github.com/LisseldeE](https://github.com/LisseldeE)
+- **Email**: Lisselde.E@outlook.com
+
 ## Features
 
 ### Core Features
@@ -100,6 +108,12 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Python 3.8+ (for source code execution)
 
 ## Changelog
+
+### R9 (2026.6.4)
+- Fixed high DPI scaling issue (150% scaling oversized interface)
+- Auto-hide sync rules button in Newest First mode
+- Adjusted button layout order, mode switch button next to sync button
+- Optimized interface display on high-resolution monitors
 
 ### R8 (2026.6.4)
 - Added Chinese/English interface switching

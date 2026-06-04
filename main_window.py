@@ -1,3 +1,12 @@
+"""
+SyncGUI - 本地与移动介质双向文件同步工具
+
+Author: Lisselde_E
+GitHub: https://github.com/LisseldeE
+Email: Lisselde.E@outlook.com
+License: MIT
+"""
+
 import sys
 import os
 import json
@@ -1730,6 +1739,118 @@ class SyncRulesDialog(QDialog):
         return self.rules
 
 
+class AboutDialog(QDialog):
+    """关于弹窗"""
+    def __init__(self, lang='zh', parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self.setWindowTitle(get_text("about_title", lang))
+        self.setModal(True)
+        # 移除右上角的问号按钮
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setFixedSize(400, 280)
+        self._init_ui()
+    
+    def _init_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(25, 25, 25, 25)
+        
+        # 标题
+        title_label = QLabel("SyncGUI")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 22px;
+                font-weight: bold;
+                color: #339af0;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # 版本信息
+        version_label = QLabel(get_text("about_version", self.lang))
+        version_label.setStyleSheet("font-size: 11px; color: #495057;")
+        version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version_label)
+        
+        # 描述
+        desc_label = QLabel(get_text("about_description", self.lang))
+        desc_label.setStyleSheet("font-size: 10px; color: #868e96;")
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+        
+        layout.addSpacing(8)
+        
+        # 作者信息
+        author_label = QLabel(get_text("about_author", self.lang))
+        author_label.setStyleSheet("font-size: 10px; color: #495057;")
+        author_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(author_label)
+        
+        # GitHub（可点击打开浏览器）
+        github_label = QLabel(get_text("about_github", self.lang))
+        github_label.setStyleSheet("""
+            QLabel {
+                font-size: 10px;
+                color: #339af0;
+            }
+            QLabel:hover {
+                color: #228be6;
+                cursor: pointer;
+            }
+        """)
+        github_label.setAlignment(Qt.AlignCenter)
+        github_label.setCursor(Qt.PointingHandCursor)
+        github_label.mousePressEvent = lambda event: self._open_github()
+        layout.addWidget(github_label)
+        
+        # 邮箱（可点击复制）
+        email_label = QLabel(get_text("about_email", self.lang))
+        email_label.setStyleSheet("""
+            QLabel {
+                font-size: 10px;
+                color: #495057;
+            }
+            QLabel:hover {
+                color: #339af0;
+                cursor: pointer;
+            }
+        """)
+        email_label.setAlignment(Qt.AlignCenter)
+        email_label.setCursor(Qt.PointingHandCursor)
+        email_label.mousePressEvent = lambda event: self._copy_email()
+        layout.addWidget(email_label)
+        
+        layout.addStretch()
+        
+        # 关闭按钮（增加高度以适应中文文字）
+        close_btn = QPushButton(get_text("btn_close", self.lang))
+        close_btn.setFixedSize(100, 36)
+        close_btn.clicked.connect(self.accept)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def _open_github(self):
+        """打开GitHub链接"""
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl("https://github.com/LisseldeE"))
+    
+    def _copy_email(self):
+        """复制邮箱到剪贴板"""
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText("Lisselde.E@outlook.com")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1851,6 +1972,13 @@ class MainWindow(QMainWindow):
         self.sync_btn.setEnabled(False)
         btn_layout.addWidget(self.sync_btn)
         
+        self.mode_btn = QPushButton(get_text("mode_default", self.current_lang))
+        self.mode_btn.setObjectName("browseBtn")
+        self.mode_btn.setMinimumHeight(44)
+        self.mode_btn.setMinimumWidth(110)
+        self.mode_btn.clicked.connect(self._toggle_mode)
+        btn_layout.addWidget(self.mode_btn)
+        
         self.ignore_btn = QPushButton(get_text("ignore_btn", self.current_lang))
         self.ignore_btn.setObjectName("browseBtn")
         self.ignore_btn.setMinimumHeight(44)
@@ -1865,12 +1993,12 @@ class MainWindow(QMainWindow):
         self.sync_rule_btn.clicked.connect(self._show_sync_rule_dialog)
         btn_layout.addWidget(self.sync_rule_btn)
         
-        self.mode_btn = QPushButton(get_text("mode_default", self.current_lang))
-        self.mode_btn.setObjectName("browseBtn")
-        self.mode_btn.setMinimumHeight(44)
-        self.mode_btn.setMinimumWidth(110)
-        self.mode_btn.clicked.connect(self._toggle_mode)
-        btn_layout.addWidget(self.mode_btn)
+        self.about_btn = QPushButton(get_text("btn_about", self.current_lang))
+        self.about_btn.setObjectName("browseBtn")
+        self.about_btn.setMinimumHeight(44)
+        self.about_btn.setMinimumWidth(80)
+        self.about_btn.clicked.connect(self._show_about_dialog)
+        btn_layout.addWidget(self.about_btn)
         
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
@@ -1964,6 +2092,8 @@ class MainWindow(QMainWindow):
                     background-color: #228be6;
                 }
             """)
+            # 最新优先模式下隐藏同步规则按钮（不使用同步规则）
+            self.sync_rule_btn.setVisible(False)
         else:
             self.mode_btn.setText(get_text("mode_default", self.current_lang))
             self.mode_btn.setStyleSheet("""
@@ -1977,6 +2107,8 @@ class MainWindow(QMainWindow):
                     background-color: #dee2e6;
                 }
             """)
+            # 默认模式下显示同步规则按钮
+            self.sync_rule_btn.setVisible(True)
         self.mode_btn.adjustSize()
     
     def _update_ui_language(self):
@@ -2008,6 +2140,8 @@ class MainWindow(QMainWindow):
         self.ignore_btn.adjustSize()
         self.sync_rule_btn.setText(get_text("sync_rule_btn", lang))
         self.sync_rule_btn.adjustSize()
+        self.about_btn.setText(get_text("btn_about", lang))
+        self.about_btn.adjustSize()
         self._update_mode_button()
         
         # 更新状态
@@ -2061,6 +2195,11 @@ class MainWindow(QMainWindow):
             saved_text = self.current_lang == "zh" and f"✅ 已保存 {len(self.sync_rules)} 条同步规则" or f"✅ Saved {len(self.sync_rules)} sync rules"
             self.status_label.setText(saved_text)
             self.status_label.setStyleSheet("color: #2f9e44; font-size: 13px; padding: 4px 0;")
+    
+    def _show_about_dialog(self):
+        """显示关于弹窗"""
+        dialog = AboutDialog(self.current_lang, self)
+        dialog.exec_()
     
     def _on_path_changed(self):
         if self.auto_scan_timer:

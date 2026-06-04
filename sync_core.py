@@ -1,3 +1,12 @@
+"""
+SyncGUI - 同步核心模块
+
+Author: Lisselde_E
+GitHub: https://github.com/LisseldeE
+Email: Lisselde.E@outlook.com
+License: MIT
+"""
+
 import os
 import hashlib
 import shutil

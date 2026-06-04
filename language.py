@@ -1,4 +1,11 @@
-# 语言配置文件
+"""
+SyncGUI - 语言配置文件
+
+Author: Lisselde_E
+GitHub: https://github.com/LisseldeE
+Email: Lisselde.E@outlook.com
+License: MIT
+"""
 
 LANGUAGES = {
     "zh": {
@@ -105,6 +112,15 @@ LANGUAGES = {
         "btn_yes": "是",
         "btn_no": "否",
         "btn_cancel_sync": "❌ 取消本次同步",
+        "btn_about": "关于",
+        
+        # 关于弹窗
+        "about_title": "关于 SyncGUI",
+        "about_version": "版本：SyncGUI_R9",
+        "about_author": "作者：Lisselde_E",
+        "about_github": "GitHub：https://github.com/LisseldeE",
+        "about_email": "邮箱：Lisselde.E@outlook.com",
+        "about_description": "一个简洁高效的本地与移动介质双向文件同步工具",
         
         # 忽略规则
         "ignore_title": "当前忽略规则：",
@@ -220,6 +236,15 @@ LANGUAGES = {
         "btn_yes": "Yes",
         "btn_no": "No",
         "btn_cancel_sync": "❌ Cancel Sync",
+        "btn_about": "About",
+        
+        # About dialog
+        "about_title": "About SyncGUI",
+        "about_version": "Version: SyncGUI_R9",
+        "about_author": "Author: Lisselde_E",
+        "about_github": "GitHub: https://github.com/LisseldeE",
+        "about_email": "Email: Lisselde.E@outlook.com",
+        "about_description": "A simple and efficient bidirectional file synchronization tool",
         
         # Ignore rules
         "ignore_title": "Current ignore rules:",
