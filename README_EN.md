@@ -24,10 +24,12 @@ A simple and efficient bidirectional file synchronization tool between local sto
 
 ### Configuration
 
+The configuration file `config.json` automatically saves user settings, no manual modification needed:
+
 ```json
 {
-  "source_dir": "Local path",
-  "target_dir": "Removable media path",
+  "wintogo_dir": "Removable media path",
+  "local_dir": "Local path",
   "ignore_rules": [
     "SyncGUI/",
     "**/.git/"
@@ -35,9 +37,22 @@ A simple and efficient bidirectional file synchronization tool between local sto
   "sync_rules": [
     "Python/",
     "Servers/"
-  ]
+  ],
+  "language": "en",
+  "sync_mode": "default"
 }
 ```
+
+#### Configuration Fields
+
+| Field | Description |
+|-------|-------------|
+| `wintogo_dir` | Removable media directory path |
+| `local_dir` | Local directory path |
+| `ignore_rules` | Ignore rules list |
+| `sync_rules` | Sync rules list |
+| `language` | Interface language (`zh` Chinese / `en` English) |
+| `sync_mode` | Sync mode (`default` Default / `newest` Newest First) |
 
 #### Ignore Rule Syntax
 
@@ -53,17 +68,24 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 
 ## Usage
 
-1. Modify `config.json` to set sync paths
-2. Run `SyncGUI.exe` or `python main.py`
-3. Click "Scan" to detect differences
-4. Follow popup prompts to choose sync direction
+1. Run `SyncGUI.exe` or `python main.py`
+2. Select removable media directory and local directory
+3. Click "Scan" to detect file differences
+4. Follow popup prompts to choose sync direction (can click "Cancel Sync" to abort)
 5. Click "Sync" to execute operations
+
+### Sync Modes
+
+- **Default Mode** - Popup for each difference file to ask sync direction
+- **Newest First** - Automatically choose newer version to sync, reducing popup prompts
 
 ## Interface
 
 - Main window displays scan progress and difference statistics
 - Unified popup style for intuitive operation
 - Support for viewing detailed file lists
+- Support Chinese/English interface switching (click language button)
+- All settings automatically saved, restored on next startup
 
 ## Technical Implementation
 
@@ -78,6 +100,14 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Python 3.8+ (for source code execution)
 
 ## Changelog
+
+### R8 (2026.6.4)
+- Added Chinese/English interface switching
+- Adapted all interface elements to English mode
+- Added "Newest First" sync mode
+- Fixed button display logic, optimized details
+- Fixed some interface element update logic
+- Updated configuration file structure for new features
 
 ### R7 (2026.5.28)
 - Added `**/` global folder exclusion syntax

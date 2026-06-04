@@ -5,5 +5,7 @@
   "sync_rules": [
     "Python/",
     "Servers/"
-  ]
+  ],
+  "language": "zh",
+  "sync_mode": "newest"
 }
