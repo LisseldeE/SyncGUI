@@ -7,5 +7,9 @@
     "Servers/"
   ],
   "language": "zh",
-  "sync_mode": "default"
+  "sync_mode": "default",
+  "sync_type": "bidirectional",
+  "unidirectional_mode": "diff",
+  "sync_direction": "local_to_removable",
+  "extra_items_mode": "delete"
 }

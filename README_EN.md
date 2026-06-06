@@ -2,7 +2,7 @@
 
 A simple and efficient bidirectional file synchronization tool between local storage and removable media.
 
-**Version**: SyncGUI_R9
+**Version**: SyncGUI_R10
 
 ## Author
 
@@ -60,7 +60,7 @@ The configuration file `config.json` automatically saves user settings, no manua
 | `ignore_rules` | Ignore rules list |
 | `sync_rules` | Sync rules list |
 | `language` | Interface language (`zh` Chinese / `en` English) |
-| `sync_mode` | Sync mode (`default` Default / `newest` Newest First) |
+| `sync_mode` | Sync mode (`default` Default / `newest` Newest First / `unidirectional` Unidirectional Sync) |
 
 #### Ignore Rule Syntax
 
@@ -86,6 +86,7 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 
 - **Default Mode** - Popup for each difference file to ask sync direction
 - **Newest First** - Automatically choose newer version to sync, reducing popup prompts
+- **Unidirectional Sync** - Supports one-way sync from removable to local or local to removable, with diff/overwrite mode options, and keep/delete extra items toggle
 
 ## Interface
 
@@ -108,6 +109,15 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Python 3.8+ (for source code execution)
 
 ## Changelog
+
+### R10 (2026.6.6)
+- Added! Unidirectional sync mode and its accessory settings
+- Added auto-refresh when switching modes
+- Optimized button display logic
+- Fixed file path reading logic
+- Fixed popup logic and option content during sync
+- Fully standardized file sync logic
+- Completely refactored the file deletion logic and the handling logic for empty parent directories
 
 ### R9 (2026.6.4)
 - Fixed high DPI scaling issue (150% scaling oversized interface)

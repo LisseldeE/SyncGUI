@@ -24,8 +24,8 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 
 from sync_core import (
-    scan_directory, compare_files, sync_file,
-    FileStatus, DiffResult
+    scan_directory, compare_files, compare_files_unidirectional, sync_file,
+    rmtree_safe, _remove_empty_path_chain, FileStatus, DiffResult
 )
 from language import get_text, LANGUAGES
 
@@ -116,6 +116,36 @@ QPushButton#browseBtn {
 }
 QPushButton#browseBtn:hover {
     background-color: #dee2e6;
+}
+QComboBox {
+    background-color: #e9ecef;
+    color: #495057;
+    border: 1px solid #ced4da;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+}
+QComboBox:hover {
+    background-color: #dee2e6;
+    border: 1px solid #adb5bd;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 30px;
+}
+QComboBox::down-arrow {
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid #495057;
+    margin-right: 10px;
+}
+QComboBox QAbstractItemView {
+    background-color: white;
+    border: 1px solid #ced4da;
+    selection-background-color: #339af0;
+    selection-color: white;
+    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
 }
 QTableWidget {
     border: 1px solid #dee2e6;
@@ -238,19 +268,53 @@ class CompareWorker(QThread):
     finished = pyqtSignal(list)
     
     def __init__(self, wintogo_files: dict, local_files: dict, 
-                 wintogo_dir: str, local_dir: str):
+                 wintogo_dir: str, local_dir: str,
+                 sync_type: str = "bidirectional",
+                 unidirectional_mode: str = "diff",
+                 sync_direction: str = "removable_to_local",
+                 extra_items_mode: str = "keep"):
         super().__init__()
         self.wintogo_files = wintogo_files
         self.local_files = local_files
         self.wintogo_dir = wintogo_dir
         self.local_dir = local_dir
+        self.sync_type = sync_type
+        self.unidirectional_mode = unidirectional_mode
+        self.sync_direction = sync_direction
+        self.extra_items_mode = extra_items_mode
     
     def run(self):
-        results = compare_files(
-            self.wintogo_files, self.local_files,
-            self.wintogo_dir, self.local_dir,
-            self._progress_callback
-        )
+        if self.sync_type == "unidirectional":
+            # 单向同步
+            if self.sync_direction == "removable_to_local":
+                # 介质 → 本地
+                source_files = self.wintogo_files
+                target_files = self.local_files
+                source_dir = self.wintogo_dir
+                target_dir = self.local_dir
+            else:
+                # 本地 → 介质
+                source_files = self.local_files
+                target_files = self.wintogo_files
+                source_dir = self.local_dir
+                target_dir = self.wintogo_dir
+            
+            results = compare_files_unidirectional(
+                source_files, target_files,
+                source_dir, target_dir,
+                self.unidirectional_mode,
+                self.extra_items_mode,  # 新增参数：多余项目处理模式
+                self._progress_callback,
+                100,  # progress_interval
+                self.wintogo_dir  # wintogo_dir: 介质目录路径，用于正确设置状态
+            )
+        else:
+            # 双向同步
+            results = compare_files(
+                self.wintogo_files, self.local_files,
+                self.wintogo_dir, self.local_dir,
+                self._progress_callback
+            )
         self.finished.emit(results)
     
     def _progress_callback(self, current: int, total: int):
@@ -275,24 +339,64 @@ class SyncWorker(QThread):
         skip_count = 0
         
         to_sync = [d for d in self.diff_results if d.status != FileStatus.SAME]
-        
+
+        # 对删除操作进行排序：按路径深度排序（父目录优先）
+        # 这样可以确保在删除文件夹时，如果父目录已被删除，则跳过子内容的删除
+        delete_items = []
+        other_items = []
+
+        for diff in to_sync:
+            decision = self.conflict_decisions.get(diff.relative_path, "skip")
+            if decision.startswith("delete_"):
+                delete_items.append(diff)
+            else:
+                other_items.append(diff)
+
+        # 对删除项目按路径深度排序（浅层路径优先，这样父目录会先被删除）
+        # 注意：Windows 路径使用反斜杠，统一用 os.sep 确保跨平台正确
+        delete_items.sort(key=lambda d: d.relative_path.count(os.sep), reverse=False)
+
+        # 合并列表：删除操作优先
+        to_sync = delete_items + other_items
+
+        # 记录已删除的路径，用于跳过子路径的删除
+        deleted_paths = set()
+
         total_bytes = 0
         for diff in to_sync:
             if diff.wintogo_info:
                 total_bytes += diff.wintogo_info.size
             elif diff.local_info:
                 total_bytes += diff.local_info.size
-        
+
         transferred_bytes = 0
-        
+
         for idx, diff in enumerate(to_sync):
             file_size = 0
             if diff.wintogo_info:
                 file_size = diff.wintogo_info.size
             elif diff.local_info:
                 file_size = diff.local_info.size
-            
+
             decision = self.conflict_decisions.get(diff.relative_path, "skip")
+
+            # 检查是否是删除操作，且父路径已经被删除
+            if decision.startswith("delete_"):
+                # 检查是否有父路径已经被删除
+                # 跨平台：用 os.sep 分割路径（Windows 用 \，Linux/Unix 用 /）
+                path_parts = diff.relative_path.split(os.sep)
+                parent_deleted = False
+                for i in range(len(path_parts) - 1):
+                    parent_path = os.sep.join(path_parts[:i+1])
+                    if parent_path in deleted_paths:
+                        parent_deleted = True
+                        break
+                
+                if parent_deleted:
+                    # 父路径已经被删除，跳过此路径的删除
+                    skip_count += 1
+                    self.progress.emit(transferred_bytes, total_bytes, 0, file_size, diff.relative_path)
+                    continue
             
             if decision == "skip":
                 skip_count += 1
@@ -309,6 +413,9 @@ class SyncWorker(QThread):
             if sync_file(diff, self.wintogo_dir, self.local_dir, decision, progress_callback):
                 success_count += 1
                 transferred_bytes += file_size
+                # 记录已删除的路径
+                if decision.startswith("delete_"):
+                    deleted_paths.add(diff.relative_path)
             else:
                 fail_count += 1
                 transferred_bytes += file_size
@@ -452,24 +559,27 @@ class ConflictDialog(QDialog):
         layout.addWidget(choice_label)
         
         self.button_group = QButtonGroup(self)
-        
+
         self.rb_newer = QRadioButton()
         self.rb_older = QRadioButton()
+        self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
         self.rb_skip = QRadioButton(get_text("skip_file", self.lang))
-        
+
         newer_side = get_text("removable_time", self.lang) if self.wintogo_newer else get_text("local_time", self.lang)
         older_side = get_text("local_time", self.lang) if self.wintogo_newer else get_text("removable_time", self.lang)
         self.rb_newer.setText(get_text("keep_newest", self.lang, side=newer_side))
         self.rb_older.setText(get_text("keep_older", self.lang, side=older_side))
-        
+
         self.rb_newer.setChecked(True)
-        
+
         self.button_group.addButton(self.rb_newer, 0)
         self.button_group.addButton(self.rb_older, 1)
-        self.button_group.addButton(self.rb_skip, 2)
-        
+        self.button_group.addButton(self.rb_delete_both, 2)
+        self.button_group.addButton(self.rb_skip, 3)
+
         layout.addWidget(self.rb_newer)
         layout.addWidget(self.rb_older)
+        layout.addWidget(self.rb_delete_both)
         layout.addWidget(self.rb_skip)
         
         if self.same_dir_count > 0:
@@ -552,7 +662,7 @@ class ConflictDialog(QDialog):
         """取消本次同步"""
         self.cancel_sync = True
         self.reject()
-    
+
     def get_direction(self):
         checked_id = self.button_group.checkedId()
         if checked_id == 0:
@@ -565,9 +675,11 @@ class ConflictDialog(QDialog):
                 return "local_to_wintogo"
             else:
                 return "wintogo_to_local"
+        elif checked_id == 2:
+            return "delete_both"
         else:
             return "skip"
-    
+
     def should_apply_to_dir(self):
         if self.same_dir_count > 0 and hasattr(self, 'apply_dir_check'):
             return self.apply_dir_check.isChecked()
@@ -669,19 +781,26 @@ class OnlyOneSideDialog(QDialog):
         layout.addWidget(choice_label)
         
         self.button_group = QButtonGroup(self)
-        
-        copy_text = self.lang == "zh" and f"📋 复制到{other_side}（补充缺少的文件）" or f"📋 Copy to {other_side}"
-        delete_text = self.lang == "zh" and f"🗑️ 删除此文件（移除多余的文件）" or "🗑️ Delete this file"
+
+        # 根据文件状态动态显示正确的同步方向
+        if is_wintogo_only:
+            # 介质存在，本地不存在：显示"介质 → 本地"
+            copy_text = self.lang == "zh" and "➡️ 介质 → 本地（补充本地缺失的文件）" or "➡️ Removable → Local"
+        else:
+            # 本地存在，介质不存在：显示"本地 → 介质"
+            copy_text = self.lang == "zh" and "➡️ 本地 → 介质（补充介质缺失的文件）" or "➡️ Local → Removable"
+
+        delete_text = self.lang == "zh" and f"🗑️ 删除此文件（移除{side_name}多余的文件）" or f"🗑️ Delete this file"
         self.rb_copy = QRadioButton(copy_text)
         self.rb_delete = QRadioButton(delete_text)
         self.rb_skip = QRadioButton(get_text("skip_file", self.lang))
-        
+
         self.rb_copy.setChecked(True)
-        
+
         self.button_group.addButton(self.rb_copy, 0)
         self.button_group.addButton(self.rb_delete, 1)
         self.button_group.addButton(self.rb_skip, 2)
-        
+
         layout.addWidget(self.rb_copy)
         layout.addWidget(self.rb_delete)
         layout.addWidget(self.rb_skip)
@@ -777,7 +896,7 @@ class OnlyOneSideDialog(QDialog):
     def get_direction(self):
         checked_id = self.button_group.checkedId()
         is_wintogo_only = self.diff.status == FileStatus.WINTOGO_ONLY
-        
+
         if checked_id == 0:
             if is_wintogo_only:
                 return "to_local"
@@ -939,26 +1058,29 @@ class MtimeDiffDialog(QDialog):
         layout.addWidget(choice_label)
         
         self.button_group = QButtonGroup(self)
-        
+
         self.rb_newer = QRadioButton()
         self.rb_older = QRadioButton()
+        self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
         self.rb_skip = QRadioButton(self.lang == "zh" and "⏭️ 跳过（保持现状）" or "⏭️ Skip (keep current)")
-        
+
         newer_side = get_text("removable_time", self.lang) if self.wintogo_newer else get_text("local_time", self.lang)
         older_side = get_text("local_time", self.lang) if self.wintogo_newer else get_text("removable_time", self.lang)
         newer_text = self.lang == "zh" and f"✨ 用{newer_side}（较新）覆盖{older_side}" or f"✨ Use {newer_side} (newer) to overwrite"
         older_text = self.lang == "zh" and f"📥 用{older_side}（较旧）覆盖{newer_side}" or f"📥 Use {older_side} (older) to overwrite"
         self.rb_newer.setText(newer_text)
         self.rb_older.setText(older_text)
-        
+
         self.rb_newer.setChecked(True)
-        
+
         self.button_group.addButton(self.rb_newer, 0)
         self.button_group.addButton(self.rb_older, 1)
-        self.button_group.addButton(self.rb_skip, 2)
-        
+        self.button_group.addButton(self.rb_delete_both, 2)
+        self.button_group.addButton(self.rb_skip, 3)
+
         layout.addWidget(self.rb_newer)
         layout.addWidget(self.rb_older)
+        layout.addWidget(self.rb_delete_both)
         layout.addWidget(self.rb_skip)
         
         if self.same_dir_count > 0:
@@ -1041,7 +1163,7 @@ class MtimeDiffDialog(QDialog):
         """取消本次同步"""
         self.cancel_sync = True
         self.reject()
-    
+
     def get_direction(self):
         checked_id = self.button_group.checkedId()
         if checked_id == 0:
@@ -1054,9 +1176,11 @@ class MtimeDiffDialog(QDialog):
                 return "local_to_wintogo"
             else:
                 return "wintogo_to_local"
+        elif checked_id == 2:
+            return "delete_both"
         else:
             return "skip"
-    
+
     def should_apply_to_dir(self):
         if self.same_dir_count > 0 and hasattr(self, 'apply_dir_check'):
             return self.apply_dir_check.isChecked()
@@ -1858,6 +1982,10 @@ class MainWindow(QMainWindow):
         config = load_config()
         self.current_lang = config.get('language', 'zh')
         self.sync_mode = config.get('sync_mode', 'default')  # "default" or "newest"
+        self.sync_type = config.get('sync_type', 'bidirectional')  # "bidirectional" or "unidirectional"
+        self.unidirectional_mode = config.get('unidirectional_mode', 'diff')  # "diff" or "overwrite"
+        self.sync_direction = config.get('sync_direction', 'removable_to_local')  # "removable_to_local" or "local_to_removable"
+        self.extra_items_mode = config.get('extra_items_mode', 'keep')  # "keep" or "delete"
         
         self.setWindowTitle(get_text("app_title", self.current_lang))
         self.setMinimumSize(1000, 700)
@@ -1874,6 +2002,13 @@ class MainWindow(QMainWindow):
         
         self._init_ui()
         self._load_saved_paths()
+        # 初始化按钮状态
+        self._update_sync_type_button()
+        self._update_unidirectional_mode_button()
+        self._update_extra_items_button()
+        self._update_buttons_visibility()
+        # 初始化头部箭头显示（根据同步类型和方向动态显示）
+        self._update_header_status()
     
     def _init_ui(self):
         central_widget = QWidget()
@@ -1910,6 +2045,29 @@ class MainWindow(QMainWindow):
         """)
         self.lang_btn.clicked.connect(self._toggle_language)
         header_layout.addWidget(self.lang_btn)
+        
+        # 关于按钮（小图标）
+        self.about_btn = QPushButton("i")
+        self.about_btn.setFixedSize(32, 32)
+        self.about_btn.setToolTip(get_text("btn_about", self.current_lang))
+        self.about_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f8f9fa;
+                color: #6c757d;
+                border: 1px solid #dee2e6;
+                border-radius: 16px;
+                font-size: 16px;
+                font-weight: bold;
+                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #e9ecef;
+                color: #495057;
+                border-color: #adb5bd;
+            }
+        """)
+        self.about_btn.clicked.connect(self._show_about_dialog)
+        header_layout.addWidget(self.about_btn)
         
         layout.addLayout(header_layout)
         
@@ -1954,15 +2112,82 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(dir_group)
         
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(12)
+        # 第一行按钮：同步模式、默认模式、忽略规则、同步规则
+        btn_layout_row1 = QHBoxLayout()
+        btn_layout_row1.setSpacing(12)
+        
+        # 同步模式切换按钮（双向/单向）
+        self.sync_type_btn = QPushButton(get_text("sync_type_bidirectional", self.current_lang))
+        self.sync_type_btn.setObjectName("browseBtn")
+        self.sync_type_btn.setMinimumHeight(44)
+        self.sync_type_btn.setMinimumWidth(110)
+        self.sync_type_btn.clicked.connect(self._toggle_sync_type)
+        btn_layout_row1.addWidget(self.sync_type_btn)
+        
+        # 默认模式按钮（默认模式/最新优先）
+        self.mode_btn = QPushButton(get_text("mode_default", self.current_lang))
+        self.mode_btn.setObjectName("browseBtn")
+        self.mode_btn.setMinimumHeight(44)
+        self.mode_btn.setMinimumWidth(110)
+        self.mode_btn.clicked.connect(self._toggle_mode)
+        btn_layout_row1.addWidget(self.mode_btn)
+        
+        # 单向模式子模式按钮（差异同步/覆盖同步）
+        self.unidirectional_mode_btn = QPushButton(get_text("unidirectional_mode_diff", self.current_lang))
+        self.unidirectional_mode_btn.setObjectName("browseBtn")
+        self.unidirectional_mode_btn.setMinimumHeight(44)
+        self.unidirectional_mode_btn.setMinimumWidth(110)
+        self.unidirectional_mode_btn.clicked.connect(self._toggle_unidirectional_mode)
+        self.unidirectional_mode_btn.setVisible(False)  # 默认隐藏，只在单向模式下显示
+        btn_layout_row1.addWidget(self.unidirectional_mode_btn)
+        
+        # 方向切换按钮（介质→本地/本地→介质）
+        self.direction_btn = QPushButton(get_text("direction_removable_to_local", self.current_lang))
+        self.direction_btn.setObjectName("browseBtn")
+        self.direction_btn.setMinimumHeight(44)
+        self.direction_btn.setMinimumWidth(150)
+        self.direction_btn.clicked.connect(self._change_sync_direction)
+        self.direction_btn.setVisible(False)  # 默认隐藏，只在单向模式下显示
+        btn_layout_row1.addWidget(self.direction_btn)
+        
+        # 多余项目处理按钮（保留多余项目/删除多余项目）
+        self.extra_items_btn = QPushButton(get_text("extra_items_keep", self.current_lang))
+        self.extra_items_btn.setObjectName("browseBtn")
+        self.extra_items_btn.setMinimumHeight(44)
+        self.extra_items_btn.setMinimumWidth(130)
+        self.extra_items_btn.clicked.connect(self._toggle_extra_items_mode)
+        self.extra_items_btn.setVisible(False)  # 默认隐藏，只在单向模式下显示
+        btn_layout_row1.addWidget(self.extra_items_btn)
+        
+        # 忽略规则按钮
+        self.ignore_btn = QPushButton(get_text("ignore_btn", self.current_lang))
+        self.ignore_btn.setObjectName("browseBtn")
+        self.ignore_btn.setMinimumHeight(44)
+        self.ignore_btn.setMinimumWidth(100)
+        self.ignore_btn.clicked.connect(self._show_ignore_dialog)
+        btn_layout_row1.addWidget(self.ignore_btn)
+        
+        # 同步规则按钮
+        self.sync_rule_btn = QPushButton(get_text("sync_rule_btn", self.current_lang))
+        self.sync_rule_btn.setObjectName("browseBtn")
+        self.sync_rule_btn.setMinimumHeight(44)
+        self.sync_rule_btn.setMinimumWidth(100)
+        self.sync_rule_btn.clicked.connect(self._show_sync_rule_dialog)
+        btn_layout_row1.addWidget(self.sync_rule_btn)
+        
+        btn_layout_row1.addStretch()
+        layout.addLayout(btn_layout_row1)
+        
+        # 第二行按钮：扫描差异、执行同步
+        btn_layout_row2 = QHBoxLayout()
+        btn_layout_row2.setSpacing(12)
         
         self.scan_btn = QPushButton(get_text("scan_btn", self.current_lang))
         self.scan_btn.setObjectName("scanBtn")
         self.scan_btn.setFixedHeight(44)
         self.scan_btn.setFixedWidth(140)
         self.scan_btn.clicked.connect(self._start_scan)
-        btn_layout.addWidget(self.scan_btn)
+        btn_layout_row2.addWidget(self.scan_btn)
         
         self.sync_btn = QPushButton(get_text("sync_btn", self.current_lang))
         self.sync_btn.setObjectName("syncBtn")
@@ -1970,38 +2195,10 @@ class MainWindow(QMainWindow):
         self.sync_btn.setFixedWidth(140)
         self.sync_btn.clicked.connect(self._execute_sync)
         self.sync_btn.setEnabled(False)
-        btn_layout.addWidget(self.sync_btn)
+        btn_layout_row2.addWidget(self.sync_btn)
         
-        self.mode_btn = QPushButton(get_text("mode_default", self.current_lang))
-        self.mode_btn.setObjectName("browseBtn")
-        self.mode_btn.setMinimumHeight(44)
-        self.mode_btn.setMinimumWidth(110)
-        self.mode_btn.clicked.connect(self._toggle_mode)
-        btn_layout.addWidget(self.mode_btn)
-        
-        self.ignore_btn = QPushButton(get_text("ignore_btn", self.current_lang))
-        self.ignore_btn.setObjectName("browseBtn")
-        self.ignore_btn.setMinimumHeight(44)
-        self.ignore_btn.setMinimumWidth(100)
-        self.ignore_btn.clicked.connect(self._show_ignore_dialog)
-        btn_layout.addWidget(self.ignore_btn)
-        
-        self.sync_rule_btn = QPushButton(get_text("sync_rule_btn", self.current_lang))
-        self.sync_rule_btn.setObjectName("browseBtn")
-        self.sync_rule_btn.setMinimumHeight(44)
-        self.sync_rule_btn.setMinimumWidth(100)
-        self.sync_rule_btn.clicked.connect(self._show_sync_rule_dialog)
-        btn_layout.addWidget(self.sync_rule_btn)
-        
-        self.about_btn = QPushButton(get_text("btn_about", self.current_lang))
-        self.about_btn.setObjectName("browseBtn")
-        self.about_btn.setMinimumHeight(44)
-        self.about_btn.setMinimumWidth(80)
-        self.about_btn.clicked.connect(self._show_about_dialog)
-        btn_layout.addWidget(self.about_btn)
-        
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        btn_layout_row2.addStretch()
+        layout.addLayout(btn_layout_row2)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -2067,6 +2264,185 @@ class MainWindow(QMainWindow):
         # 保存语言设置到配置文件
         self._save_paths()
     
+    def _toggle_sync_type(self):
+        """切换同步类型（双向/单向）"""
+        if self.sync_type == "bidirectional":
+            self.sync_type = "unidirectional"
+        else:
+            self.sync_type = "bidirectional"
+        self._update_sync_type_button()
+        self._update_buttons_visibility()
+        # 更新头部箭头显示
+        self._update_header_status()
+        # 保存同步类型设置到配置文件
+        self._save_paths()
+        # 自动触发扫描差异
+        self._auto_scan_on_change()
+
+    def _auto_scan_on_change(self):
+        """在切换同步模式或方向时自动触发扫描差异"""
+        wintogo_dir = self.wintogo_edit.text().strip()
+        local_dir = self.local_edit.text().strip()
+
+        # 只有在两个目录都已设置且扫描按钮可用时才触发扫描
+        if wintogo_dir and local_dir and self.scan_btn.isEnabled():
+            # 检查目录是否存在
+            if os.path.exists(wintogo_dir) and os.path.exists(local_dir):
+                # 自动触发扫描
+                self._start_scan()
+    
+    def _update_sync_type_button(self):
+        """更新同步类型按钮显示"""
+        if self.sync_type == "unidirectional":
+            self.sync_type_btn.setText(get_text("sync_type_unidirectional", self.current_lang))
+            self.sync_type_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #339af0;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #228be6;
+                }
+            """)
+        else:
+            self.sync_type_btn.setText(get_text("sync_type_bidirectional", self.current_lang))
+            self.sync_type_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e9ecef;
+                    color: #495057;
+                    border: 1px solid #ced4da;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #dee2e6;
+                }
+            """)
+        self.sync_type_btn.adjustSize()
+    
+    def _toggle_unidirectional_mode(self):
+        """切换单向同步子模式（差异同步/覆盖同步）"""
+        if self.unidirectional_mode == "diff":
+            self.unidirectional_mode = "overwrite"
+        else:
+            self.unidirectional_mode = "diff"
+        self._update_unidirectional_mode_button()
+        # 保存单向同步子模式设置到配置文件
+        self._save_paths()
+        # 自动触发扫描差异
+        self._auto_scan_on_change()
+    
+    def _update_unidirectional_mode_button(self):
+        """更新单向同步子模式按钮显示"""
+        if self.unidirectional_mode == "overwrite":
+            self.unidirectional_mode_btn.setText(get_text("unidirectional_mode_overwrite", self.current_lang))
+            self.unidirectional_mode_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #fa5252;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #e03131;
+                }
+            """)
+        else:
+            self.unidirectional_mode_btn.setText(get_text("unidirectional_mode_diff", self.current_lang))
+            self.unidirectional_mode_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e9ecef;
+                    color: #495057;
+                    border: 1px solid #ced4da;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #dee2e6;
+                }
+            """)
+        self.unidirectional_mode_btn.adjustSize()
+    
+    def _toggle_extra_items_mode(self):
+        """切换多余项目处理模式（保留/删除）"""
+        if self.extra_items_mode == "keep":
+            self.extra_items_mode = "delete"
+        else:
+            self.extra_items_mode = "keep"
+        self._update_extra_items_button()
+        # 保存多余项目处理模式设置到配置文件
+        self._save_paths()
+        # 自动触发扫描差异
+        self._auto_scan_on_change()
+    
+    def _update_extra_items_button(self):
+        """更新多余项目处理按钮显示"""
+        if self.extra_items_mode == "delete":
+            self.extra_items_btn.setText(get_text("extra_items_delete", self.current_lang))
+            self.extra_items_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #fa5252;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #e03131;
+                }
+            """)
+        else:
+            self.extra_items_btn.setText(get_text("extra_items_keep", self.current_lang))
+            self.extra_items_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2f9e44;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #238636;
+                }
+            """)
+        self.extra_items_btn.adjustSize()
+    
+    def _change_sync_direction(self):
+        """切换同步方向"""
+        if self.sync_direction == "removable_to_local":
+            self.sync_direction = "local_to_removable"
+            self.direction_btn.setText(get_text("direction_local_to_removable", self.current_lang))
+        else:
+            self.sync_direction = "removable_to_local"
+            self.direction_btn.setText(get_text("direction_removable_to_local", self.current_lang))
+        # 更新头部箭头显示
+        self._update_header_status()
+        # 保存同步方向设置到配置文件
+        self._save_paths()
+        # 自动触发扫描差异
+        self._auto_scan_on_change()
+    
+    def _update_buttons_visibility(self):
+        """更新按钮显示/隐藏逻辑"""
+        if self.sync_type == "unidirectional":
+            # 单向模式下：隐藏默认模式按钮和同步规则按钮，显示单向模式子模式按钮、方向切换按钮和多余项目处理按钮
+            self.mode_btn.setVisible(False)
+            self.sync_rule_btn.setVisible(False)
+            self.unidirectional_mode_btn.setVisible(True)
+            self.direction_btn.setVisible(True)
+            self.extra_items_btn.setVisible(True)
+            # 更新方向按钮文本
+            if self.sync_direction == "local_to_removable":
+                self.direction_btn.setText(get_text("direction_local_to_removable", self.current_lang))
+            else:
+                self.direction_btn.setText(get_text("direction_removable_to_local", self.current_lang))
+        else:
+            # 双向模式下：显示默认模式按钮，隐藏单向模式子模式按钮、方向切换按钮和多余项目处理按钮
+            self.mode_btn.setVisible(True)
+            # 同步规则按钮的显示由_update_mode_button控制
+            self._update_mode_button()
+            self.unidirectional_mode_btn.setVisible(False)
+            self.direction_btn.setVisible(False)
+            self.extra_items_btn.setVisible(False)
+    
     def _toggle_mode(self):
         """切换同步模式"""
         if self.sync_mode == "default":
@@ -2114,12 +2490,13 @@ class MainWindow(QMainWindow):
     def _update_ui_language(self):
         """更新界面语言"""
         lang = self.current_lang
-        
+
         # 更新窗口标题
         self.setWindowTitle(get_text("app_title", lang))
-        
-        # 更新头部
-        self.version_label.setText(get_text("header_subtitle", lang))
+
+        # 更新头部（根据同步类型和方向动态显示箭头）
+        self._update_header_status()
+
         self.lang_btn.setText(get_text("language_btn", lang))
         self.lang_btn.adjustSize()
         
@@ -2140,8 +2517,14 @@ class MainWindow(QMainWindow):
         self.ignore_btn.adjustSize()
         self.sync_rule_btn.setText(get_text("sync_rule_btn", lang))
         self.sync_rule_btn.adjustSize()
-        self.about_btn.setText(get_text("btn_about", lang))
-        self.about_btn.adjustSize()
+        self.about_btn.setToolTip(get_text("btn_about", lang))
+        self._update_sync_type_button()
+        self._update_unidirectional_mode_button()
+        # 更新方向切换按钮文本
+        if self.sync_direction == "local_to_removable":
+            self.direction_btn.setText(get_text("direction_local_to_removable", lang))
+        else:
+            self.direction_btn.setText(get_text("direction_removable_to_local", lang))
         self._update_mode_button()
         
         # 更新状态
@@ -2167,7 +2550,11 @@ class MainWindow(QMainWindow):
             'ignore_rules': self.ignore_rules,
             'sync_rules': self.sync_rules,
             'language': self.current_lang,
-            'sync_mode': self.sync_mode
+            'sync_mode': self.sync_mode,
+            'sync_type': self.sync_type,
+            'unidirectional_mode': self.unidirectional_mode,
+            'sync_direction': self.sync_direction,
+            'extra_items_mode': self.extra_items_mode
         }
         save_config(config)
     
@@ -2234,25 +2621,25 @@ class MainWindow(QMainWindow):
     def _start_scan(self):
         wintogo_dir = self.wintogo_edit.text().strip()
         local_dir = self.local_edit.text().strip()
-        
+
         if not wintogo_dir or not local_dir:
             QMessageBox.warning(self, "警告", "请选择 WinToGo 目录和本地目录")
             return
-        
+
         if wintogo_dir == local_dir:
             QMessageBox.warning(self, "警告", "WinToGo 目录和本地目录不能相同")
             return
-        
+
         if not os.path.exists(wintogo_dir):
             QMessageBox.warning(self, "警告", "WinToGo 目录不存在")
             return
-        
+
         if not os.path.exists(local_dir):
             QMessageBox.warning(self, "警告", "本地目录不存在")
             return
-        
+
         self._save_paths()
-        
+
         self.scan_btn.setEnabled(False)
         self.sync_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -2262,7 +2649,7 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("color: #1971c2; font-size: 13px; padding: 4px 0;")
         self.diff_results = []
         self.conflict_decisions = {}
-        
+
         self.scan_worker = ScanWorker(wintogo_dir, local_dir, self.ignore_rules)
         self.scan_worker.progress.connect(self._on_scan_progress)
         self.scan_worker.finished.connect(self._on_scan_finished)
@@ -2283,7 +2670,9 @@ class MainWindow(QMainWindow):
         local_dir = self.local_edit.text().strip()
         
         self.compare_worker = CompareWorker(
-            wintogo_files, local_files, wintogo_dir, local_dir
+            wintogo_files, local_files, wintogo_dir, local_dir,
+            self.sync_type, self.unidirectional_mode, self.sync_direction,
+            self.extra_items_mode
         )
         self.compare_worker.progress.connect(self._on_compare_progress)
         self.compare_worker.finished.connect(self._on_compare_finished)
@@ -2296,15 +2685,15 @@ class MainWindow(QMainWindow):
     def _on_compare_finished(self, results: list):
         self.diff_results = results
         self._update_table()
-        
+
         self.progress_bar.setVisible(False)
         self.scan_btn.setEnabled(True)
-        
+
         only_one_side = [r for r in results if r.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)]
         conflicts = [r for r in results if r.status == FileStatus.CONFLICT]
         mtime_diffs = [r for r in results if r.status == FileStatus.MTIME_DIFF]
         sync_needed = [r for r in results if r.status != FileStatus.SAME]
-        
+
         if sync_needed:
             self.sync_btn.setEnabled(True)
             status_parts = []
@@ -2314,7 +2703,7 @@ class MainWindow(QMainWindow):
                 status_parts.append(f"{len(conflicts)} 个冲突")
             if mtime_diffs:
                 status_parts.append(f"{len(mtime_diffs)} 个时间差异")
-            
+
             status_text = "、".join(status_parts)
             if conflicts or mtime_diffs:
                 self.status_label.setText(f"⚠️ 发现 {len(sync_needed)} 个差异项：{status_text}")
@@ -2331,13 +2720,64 @@ class MainWindow(QMainWindow):
         
         lang = self.current_lang
         
-        status_map = {
-            FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),
-            FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(235, 251, 238)),
-            FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
-            FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),
-            FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),
-        }
+        # 根据同步模式设置不同的颜色
+        if self.sync_type == "unidirectional":
+            # 单向同步模式
+            if self.unidirectional_mode == "overwrite":
+                # 覆盖同步模式
+                # 根据同步方向决定颜色：
+                # - 源独有：绿色（准备同步至目标的新项目）
+                # - 目标独有：红色（准备删除目标的项目）
+                if self.sync_direction == "removable_to_local":
+                    # 介质 → 本地：源是介质，目标是本地
+                    status_map = {
+                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                    }
+                else:
+                    # 本地 → 介质：源是本地，目标是介质
+                    status_map = {
+                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(255, 245, 245)),  # 纅色：目标独有，准备删除
+                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                    }
+            else:
+                # 差异同步模式
+                # 根据同步方向决定颜色：
+                # - 源独有：绿色（准备同步至目标的新项目）
+                # - 目标独有：红色（准备删除目标的项目）
+                if self.sync_direction == "removable_to_local":
+                    # 介质 → 本地：源是介质，目标是本地
+                    status_map = {
+                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                    }
+                else:
+                    # 本地 → 介质：源是本地，目标是介质
+                    status_map = {
+                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                    }
+        else:
+            # 双向同步模式
+            status_map = {
+                FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),  # 绿色：仅一方存在
+                FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(227, 245, 255)),  # 绿色：仅一方存在
+                FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
+                FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
+                FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
+            }
         
         action_map = {
             FileStatus.WINTOGO_ONLY: get_text("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
@@ -2360,7 +2800,9 @@ class MainWindow(QMainWindow):
             status_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 0, status_item)
             
+            # 整行设置背景色
             path_item = QTableWidgetItem(diff.relative_path)
+            path_item.setBackground(color)
             path_item.setForeground(QColor("#495057"))
             path_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.table.setItem(row, 1, path_item)
@@ -2374,6 +2816,7 @@ class MainWindow(QMainWindow):
                 else:
                     wintogo_size = self._format_size(diff.wintogo_info.size)
             wintogo_item = QTableWidgetItem(wintogo_size)
+            wintogo_item.setBackground(color)
             wintogo_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 2, wintogo_item)
             
@@ -2386,6 +2829,7 @@ class MainWindow(QMainWindow):
                 else:
                     local_size = self._format_size(diff.local_info.size)
             local_item = QTableWidgetItem(local_size)
+            local_item.setBackground(color)
             local_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 3, local_item)
             
@@ -2415,6 +2859,7 @@ class MainWindow(QMainWindow):
                         action_text = "已选择"
             
             action_item = QTableWidgetItem(action_text)
+            action_item.setBackground(color)
             action_item.setTextAlignment(Qt.AlignCenter)
             if diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
                 action_item.setForeground(QColor("#e67700"))
@@ -2481,11 +2926,18 @@ class MainWindow(QMainWindow):
         sync_needed = [r for r in self.diff_results if r.status != FileStatus.SAME]
         
         lang = self.current_lang
+        # 初始化 delete_both 路径记录集，所有同步模式共享此实例变量
+        self._delete_both_dirs = set()
         
         if not sync_needed:
             QMessageBox.information(self, 
                 lang == "zh" and "提示" or "Info",
                 get_text("msg_no_diff", lang))
+            return
+        
+        # 单向同步模式
+        if self.sync_type == "unidirectional":
+            self._execute_unidirectional_sync(sync_needed, lang)
             return
         
         # 最新优先模式：自动选择较新版本，不弹窗询问
@@ -2540,6 +2992,8 @@ class MainWindow(QMainWindow):
                         else:
                             self.conflict_decisions[diff.relative_path] = "skip"
                     elif direction == "delete_both":
+                        # 记录此路径，同步完成后清理其下的空目录
+                        self._delete_both_dirs.add(subdir)
                         if diff.status == FileStatus.WINTOGO_ONLY:
                             self.conflict_decisions[diff.relative_path] = "delete_wintogo"
                         elif diff.status == FileStatus.LOCAL_ONLY:
@@ -2557,6 +3011,7 @@ class MainWindow(QMainWindow):
             elif dialog.cancel_sync:
                 # 取消本次同步，清除已选择的状态并刷新表格
                 self.conflict_decisions.clear()
+                self._delete_both_dirs.clear()
                 self._update_table()
                 return
             else:
@@ -2602,6 +3057,7 @@ class MainWindow(QMainWindow):
             elif dialog.cancel_sync:
                 # 取消本次同步，清除已选择的状态并刷新表格
                 self.conflict_decisions.clear()
+                self._delete_both_dirs.clear()
                 self._update_table()
                 return
             else:
@@ -2637,6 +3093,7 @@ class MainWindow(QMainWindow):
             elif dialog.cancel_sync:
                 # 取消本次同步，清除已选择的状态并刷新表格
                 self.conflict_decisions.clear()
+                self._delete_both_dirs.clear()
                 self._update_table()
                 return
             else:
@@ -2672,6 +3129,7 @@ class MainWindow(QMainWindow):
             elif dialog.cancel_sync:
                 # 取消本次同步，清除已选择的状态并刷新表格
                 self.conflict_decisions.clear()
+                self._delete_both_dirs.clear()
                 self._update_table()
                 return
             else:
@@ -2721,7 +3179,7 @@ class MainWindow(QMainWindow):
         
         wintogo_dir = self.wintogo_edit.text().strip()
         local_dir = self.local_edit.text().strip()
-        
+
         self.sync_btn.setEnabled(False)
         self.scan_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -2729,10 +3187,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFormat("同步中... 准备中")
         self.status_label.setText("📤 正在同步文件...")
         self.status_label.setStyleSheet("color: #1971c2; font-size: 13px; padding: 4px 0;")
-        
+
         self.sync_start_time = time.time()
         self.sync_transferred_bytes = 0
-        
+
         self.sync_worker = SyncWorker(
             self.diff_results, self.conflict_decisions,
             wintogo_dir, local_dir
@@ -2740,6 +3198,158 @@ class MainWindow(QMainWindow):
         self.sync_worker.progress.connect(self._on_sync_progress)
         self.sync_worker.finished.connect(self._on_sync_finished)
         self.sync_worker.start()
+    
+    def _execute_unidirectional_sync(self, sync_needed, lang):
+        """单向同步模式处理"""
+        # 根据 extra_items_mode 处理目标多余项目
+        # 不再弹窗询问，直接根据按钮切换来决定处理方式
+        target_extra_items = []
+        if self.sync_direction == "removable_to_local":
+            # 介质 → 本地：源是介质，目标是本地
+            # 目标（本地）多余项目：源不存在，目标存在，状态为 LOCAL_ONLY
+            target_extra_items = [d for d in sync_needed if d.status == FileStatus.LOCAL_ONLY]
+        else:
+            # 本地 → 介质：源是本地，目标是介质
+            # 目标（介质）多余项目：源不存在，目标存在，状态为 WINTOGO_ONLY
+            target_extra_items = [d for d in sync_needed if d.status == FileStatus.WINTOGO_ONLY]
+        
+        # 根据 extra_items_mode 处理目标多余项目
+        if target_extra_items and self.extra_items_mode == "delete":
+            # "删除多余项目"模式：删除目标多余项目
+            for diff in target_extra_items:
+                if self.sync_direction == "removable_to_local":
+                    self.conflict_decisions[diff.relative_path] = "delete_local"
+                else:
+                    self.conflict_decisions[diff.relative_path] = "delete_wintogo"
+        # else: "保留多余项目"模式，忽略目标多余项目（不设置决策）
+        
+        # 设置其他同步项目的决策
+        for diff in sync_needed:
+            if diff.relative_path in self.conflict_decisions:
+                continue
+            
+            if self.sync_direction == "removable_to_local":
+                # 介质 → 本地：源是介质，目标是本地
+                # WINTOGO_ONLY：源（介质）独有，准备同步
+                if diff.status == FileStatus.WINTOGO_ONLY:
+                    self.conflict_decisions[diff.relative_path] = "to_local"
+                # LOCAL_ONLY：目标（本地）独有，已在 extra_items_mode 中处理
+                elif diff.status == FileStatus.CONFLICT or diff.status == FileStatus.MTIME_DIFF:
+                    if self.unidirectional_mode == "diff":
+                        # 差异同步模式：若源新于目标，则覆盖目标；若目标新于源，则忽略此项目
+                        if diff.wintogo_info and diff.local_info:
+                            if diff.wintogo_info.mtime > diff.local_info.mtime:
+                                # 源新于目标，覆盖目标
+                                self.conflict_decisions[diff.relative_path] = "wintogo_to_local"
+                            else:
+                                # 目标新于源，忽略此项目
+                                self.conflict_decisions[diff.relative_path] = "skip"
+                        else:
+                            # 无法比较时间，默认跳过
+                            self.conflict_decisions[diff.relative_path] = "skip"
+                    else:  # overwrite模式
+                        # 覆盖同步模式：源优先，始终以源覆盖目标
+                        self.conflict_decisions[diff.relative_path] = "wintogo_to_local"
+            else:
+                # 本地 → 介质：源是本地，目标是介质
+                # LOCAL_ONLY：源（本地）独有，准备同步
+                if diff.status == FileStatus.LOCAL_ONLY:
+                    self.conflict_decisions[diff.relative_path] = "to_wintogo"
+                # WINTOGO_ONLY：目标（介质）独有，已在 extra_items_mode 中处理
+                elif diff.status == FileStatus.CONFLICT or diff.status == FileStatus.MTIME_DIFF:
+                    if self.unidirectional_mode == "diff":
+                        # 差异同步模式：若源新于目标，则覆盖目标；若目标新于源，则忽略此项目
+                        if diff.wintogo_info and diff.local_info:
+                            if diff.local_info.mtime > diff.wintogo_info.mtime:
+                                # 源（本地）新于目标（介质），覆盖目标
+                                self.conflict_decisions[diff.relative_path] = "local_to_wintogo"
+                            else:
+                                # 目标（介质）新于源（本地），忽略此项目
+                                self.conflict_decisions[diff.relative_path] = "skip"
+                        else:
+                            # 无法比较时间，默认跳过
+                            self.conflict_decisions[diff.relative_path] = "skip"
+                    else:  # overwrite模式
+                        # 覆盖同步模式：源优先，始终以源覆盖目标
+                        self.conflict_decisions[diff.relative_path] = "local_to_wintogo"
+        
+        # 更新表格显示
+        self._update_table()
+        
+        # 显示确认弹窗
+        copy_count = len([r for r in self.diff_results 
+                         if self.conflict_decisions.get(r.relative_path, "").startswith("to_")])
+        delete_count = len([r for r in self.diff_results 
+                           if self.conflict_decisions.get(r.relative_path, "").startswith("delete_")])
+        
+        msg = lang == "zh" and \
+            f"确定要执行单向同步操作吗？\n\n" \
+            f"📋 复制文件: {copy_count} 个\n" or \
+            f"Confirm unidirectional sync operation?\n\n" \
+            f"📋 Copy files: {copy_count} items\n"
+        
+        if delete_count > 0:
+            msg += lang == "zh" and f"🗑️ 删除文件: {delete_count} 个\n" or f"🗑️ Delete files: {delete_count} items\n"
+        
+        msg += lang == "zh" and "\n此操作不可撤销！" or "\nThis operation cannot be undone!"
+        
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(lang == "zh" and "确认同步" or "Confirm Sync")
+        msg_box.setText(msg)
+        msg_box.setIcon(QMessageBox.Question)
+        
+        confirm_btn = msg_box.addButton(lang == "zh" and "确定" or "Confirm", QMessageBox.YesRole)
+        cancel_btn = msg_box.addButton(lang == "zh" and "取消" or "Cancel", QMessageBox.NoRole)
+        msg_box.setDefaultButton(cancel_btn)
+        
+        msg_box.exec_()
+        
+        if msg_box.clickedButton() != confirm_btn:
+            return
+        
+        # 执行同步
+        wintogo_dir = self.wintogo_edit.text().strip()
+        local_dir = self.local_edit.text().strip()
+
+        self.sync_btn.setEnabled(False)
+        self.scan_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        self.sync_worker = SyncWorker(
+            self.diff_results, self.conflict_decisions,
+            wintogo_dir, local_dir
+        )
+        self.sync_worker.progress.connect(self._on_sync_progress)
+        self.sync_worker.finished.connect(self._on_sync_finished)
+        self.sync_worker.start()
+
+    def _update_header_status(self, status: str = "default"):
+        """
+        更新主界面右上角的同步状态显示（根据同步类型和方向动态显示箭头）
+
+        Args:
+            status: 状态类型，可选值：
+                - "default": 默认状态（↔）
+                - "scanning": 扫描状态（🔍）
+                - "syncing": 同步状态（📤）
+                - "done": 完成状态（✅）
+                - "error": 错误状态（❌）
+        """
+        # 根据同步类型和方向动态显示箭头
+        if self.sync_type == "bidirectional":
+            # 双向同步：显示 ↔
+            status_key = "header_subtitle_bidirectional"
+        else:
+            # 单向同步：根据方向显示 → 或 ←
+            if self.sync_direction == "removable_to_local":
+                # 介质 → 本地
+                status_key = "header_subtitle_to_local"
+            else:
+                # 本地 → 介质（显示为 ←）
+                status_key = "header_subtitle_to_removable"
+
+        self.version_label.setText(get_text(status_key, self.current_lang))
     
     def _execute_newest_mode_sync(self, sync_needed, lang):
         """最新优先模式：自动选择较新版本"""
@@ -2799,7 +3409,7 @@ class MainWindow(QMainWindow):
         # 执行同步
         wintogo_dir = self.wintogo_edit.text().strip()
         local_dir = self.local_edit.text().strip()
-        
+
         self.sync_btn.setEnabled(False)
         self.scan_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -2807,10 +3417,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFormat(lang == "zh" and "同步中... 准备中" or "Syncing... Preparing")
         self.status_label.setText(lang == "zh" and "📤 正在同步文件..." or "📤 Syncing files...")
         self.status_label.setStyleSheet("color: #1971c2; font-size: 13px; padding: 4px 0;")
-        
+
         self.sync_start_time = time.time()
         self.sync_transferred_bytes = 0
-        
+
         self.sync_worker = SyncWorker(
             self.diff_results, self.conflict_decisions,
             wintogo_dir, local_dir
@@ -2867,10 +3477,51 @@ class MainWindow(QMainWindow):
     def _on_sync_finished(self, success_count: int, fail_count: int, skip_count: int):
         self.progress_bar.setVisible(False)
         self.scan_btn.setEnabled(True)
-        
+
+        wintogo_dir = self.wintogo_edit.text().strip()
+        local_dir = self.local_edit.text().strip()
+
+        # 第一步：处理 DirSyncDialog 的"删除两端此目录"——整体 rmtree_safe
+        if hasattr(self, '_delete_both_dirs') and self._delete_both_dirs:
+            for raw_subdir in self._delete_both_dirs:
+                subdir = raw_subdir.strip('/\\')
+                if wintogo_dir:
+                    wintogo_path = os.path.normpath(os.path.join(wintogo_dir, subdir))
+                    if os.path.isdir(wintogo_path):
+                        rmtree_safe(wintogo_path)
+                        print(f"删除两端（移动介质端）: {wintogo_path}")
+                if local_dir:
+                    local_path = os.path.normpath(os.path.join(local_dir, subdir))
+                    if os.path.isdir(local_path):
+                        rmtree_safe(local_path)
+                        print(f"删除两端（本地端）: {local_path}")
+            self._delete_both_dirs.clear()
+
+        # 第二步：处理逐文件删除留下的空目录
+        # 用户通过 OnlyOneSideDialog/ConflictDialog 选择了删文件，
+        # 文件已由 SyncWorker 逐个删除，但父目录可能残留在另一端
+        if self.conflict_decisions:
+            cleanup_parents = set()
+            for rel_path, decision in self.conflict_decisions.items():
+                if decision not in ('delete_wintogo', 'delete_local', 'delete_both'):
+                    continue
+                parent = os.path.dirname(rel_path)
+                if parent:
+                    cleanup_parents.add(parent)
+            # 去重后清理每个父目录的空目录链
+            for parent in cleanup_parents:
+                if wintogo_dir:
+                    wintogo_parent = os.path.normpath(os.path.join(wintogo_dir, parent))
+                    if os.path.isdir(wintogo_parent):
+                        _remove_empty_path_chain(wintogo_parent)
+                if local_dir:
+                    local_parent = os.path.normpath(os.path.join(local_dir, parent))
+                    if os.path.isdir(local_parent):
+                        _remove_empty_path_chain(local_parent)
+
         self.table.setRowCount(0)
         self.diff_results = []
         self.conflict_decisions = {}
-        
+
         self.status_label.setText(f"✅ 同步完成 - 成功: {success_count}, 失败: {fail_count}, 跳过: {skip_count}")
         self.status_label.setStyleSheet("color: #2f9e44; font-size: 13px; padding: 4px 0;")

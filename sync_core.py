@@ -66,8 +66,11 @@ if sys.platform == 'win32':
     )
     
     def get_file_attributes(file_path: str) -> int:
+        # GetFileAttributesW 返回 DWORD，但 ctypes 默认 restype 为 c_int
+        # INVALID_FILE_ATTRIBUTES (0xFFFFFFFF) 在 c_int 中为 -1
+        INVALID = 0xFFFFFFFF
         attrs = kernel32.GetFileAttributesW(file_path)
-        if attrs == 0xFFFFFFFF:
+        if attrs == -1 or attrs == INVALID:
             return FILE_ATTRIBUTE_NORMAL
         return attrs
     
@@ -85,6 +88,28 @@ if sys.platform == 'win32':
     def sync_dir_attributes(source_path: str, dest_path: str) -> bool:
         shutil.copystat(source_path, dest_path)
         return sync_file_attributes(source_path, dest_path)
+
+
+def _make_writable(path: str) -> None:
+    """递归移除路径下所有文件/目录的只读/系统/隐藏属性，确保可删除（Windows only）"""
+    if sys.platform != 'win32':
+        return
+    for root, dirs, files in os.walk(path):
+        for name in files + dirs:
+            full = os.path.join(root, name)
+            try:
+                attrs = get_file_attributes(full)
+                REMOVE_MASK = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN
+                if attrs & REMOVE_MASK:
+                    set_file_attributes(full, attrs & ~REMOVE_MASK)
+            except Exception:
+                pass
+
+
+def rmtree_safe(path: str) -> None:
+    """安全删除目录树，自动处理 Windows 特殊属性"""
+    _make_writable(path)
+    shutil.rmtree(path)
 
 
 class FileStatus(Enum):
@@ -130,19 +155,19 @@ def scan_directory(
 ) -> Dict[str, FileInfo]:
     files = {}
     directory = os.path.abspath(directory)
-    
+
     if not os.path.exists(directory):
         return files
-    
+
     if ignore_rules is None:
         ignore_rules = []
-    
+
     def should_ignore(relative_path: str) -> bool:
         normalized_path = relative_path.replace('\\', '/')
-        
+
         for rule in ignore_rules:
             rule = rule.replace('\\', '/')
-            
+
             if rule.endswith('/'):
                 if rule.startswith('**/'):
                     dir_name = rule[3:-1]
@@ -172,37 +197,32 @@ def scan_directory(
                         ext = '.' + ext
                         if normalized_path.startswith(dir_part + '/') and normalized_path.endswith(ext):
                             return True
-        
+
         return False
-    
+
     total = 0
     processed = 0
     last_progress_update = 0
-    
-    all_dirs = set()
-    dirs_with_files = set()
-    
-    for root, dirnames, filenames in os.walk(directory):
+
+    # 先统计文件数量
+    for root, _, filenames in os.walk(directory):
         total += len(filenames)
-        for dirname in dirnames:
-            all_dirs.add(os.path.join(root, dirname))
-        if filenames:
-            dirs_with_files.add(root)
-    
+
+    # 扫描文件
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
             full_path = os.path.join(root, filename)
             processed += 1
-            
+
             try:
                 relative_path = os.path.relpath(full_path, directory)
-                
+
                 if should_ignore(relative_path):
                     if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
                         progress_callback(processed, total)
                         last_progress_update = processed
                     continue
-                
+
                 is_symlink = os.path.islink(full_path)
                 symlink_target = None
                 if is_symlink:
@@ -210,7 +230,7 @@ def scan_directory(
                         symlink_target = os.readlink(full_path)
                     except (OSError, PermissionError):
                         pass
-                
+
                 stat = os.stat(full_path)
                 files[relative_path] = FileInfo(
                     relative_path=relative_path,
@@ -222,75 +242,86 @@ def scan_directory(
                 )
             except (OSError, PermissionError):
                 pass
-            
+
             if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
                 progress_callback(processed, total)
                 last_progress_update = processed
+
+    # 扫描空目录
+    # 使用更简单的方法：扫描所有空文件夹（包括叶子空文件夹和父空文件夹）
+    empty_dirs = set()
     
-    leaf_empty_dirs = set()
-    for dir_path in all_dirs:
-        try:
-            relative_dir = os.path.relpath(dir_path, directory)
-            if should_ignore(relative_dir):
-                continue
-            
-            has_any_content = False
-            for item in os.listdir(dir_path):
-                item_path = os.path.join(dir_path, item)
-                if os.path.isfile(item_path):
-                    has_any_content = True
-                    break
-                elif os.path.isdir(item_path):
-                    has_any_content = True
-                    break
-            
-            if not has_any_content:
-                leaf_empty_dirs.add(dir_path)
-        except (OSError, PermissionError):
-            pass
-    
-    empty_dirs = leaf_empty_dirs.copy()
-    for leaf_dir in leaf_empty_dirs:
-        parent = os.path.dirname(leaf_dir)
-        while parent and parent != directory and len(parent) > len(directory):
+    # 首先扫描叶子空文件夹
+    for root, dirs, filenames in os.walk(directory, topdown=False):
+        # 如果目录为空（没有文件和子目录）
+        if not filenames and not dirs:
             try:
-                parent_rel = os.path.relpath(parent, directory)
-                if should_ignore(parent_rel):
-                    break
-                
-                parent_has_other_content = False
-                for item in os.listdir(parent):
-                    item_path = os.path.join(parent, item)
-                    item_rel = os.path.relpath(item_path, directory)
-                    if os.path.isfile(item_path):
-                        parent_has_other_content = True
-                        break
-                    elif os.path.isdir(item_path):
-                        if item_path not in empty_dirs:
-                            parent_has_other_content = True
-                            break
-                
-                if not parent_has_other_content:
-                    empty_dirs.add(parent)
-                    parent = os.path.dirname(parent)
-                else:
-                    break
+                relative_path = os.path.relpath(root, directory)
+
+                if should_ignore(relative_path):
+                    continue
+
+                # 跳过根目录本身
+                if relative_path == '.':
+                    continue
+
+                stat = os.stat(root)
+                files[relative_path] = FileInfo(
+                    relative_path=relative_path,
+                    size=0,
+                    mtime=stat.st_mtime,
+                    is_dir=True,
+                    is_symlink=False,
+                    symlink_target=None
+                )
+                empty_dirs.add(relative_path)
             except (OSError, PermissionError):
-                break
+                pass
     
-    for empty_dir in empty_dirs:
+    # 然后扫描父空文件夹（只包含空子文件夹的文件夹）
+    # 使用更简单的方法：检查每个目录是否只包含空子文件夹
+    for root, dirs, filenames in os.walk(directory, topdown=False):
+        # 如果目录有文件，则不是空文件夹
+        if filenames:
+            continue
+        
+        # 如果目录没有子目录，则已经在上面处理过了
+        if not dirs:
+            continue
+        
         try:
-            relative_path = os.path.relpath(empty_dir, directory)
-            stat = os.stat(empty_dir)
-            files[relative_path] = FileInfo(
-                relative_path=relative_path,
-                size=0,
-                mtime=stat.st_mtime,
-                is_dir=True
-            )
+            relative_path = os.path.relpath(root, directory)
+
+            if should_ignore(relative_path):
+                continue
+
+            # 跳过根目录本身
+            if relative_path == '.':
+                continue
+
+            # 检查所有子目录是否都是空文件夹
+            all_subdirs_empty = True
+            for subdir in dirs:
+                subdir_relative_path = os.path.relpath(os.path.join(root, subdir), directory)
+                if subdir_relative_path not in empty_dirs:
+                    all_subdirs_empty = False
+                    break
+            
+            # 如果所有子目录都是空文件夹，则这个目录也是空文件夹
+            if all_subdirs_empty:
+                stat = os.stat(root)
+                files[relative_path] = FileInfo(
+                    relative_path=relative_path,
+                    size=0,
+                    mtime=stat.st_mtime,
+                    is_dir=True,
+                    is_symlink=False,
+                    symlink_target=None
+                )
+                empty_dirs.add(relative_path)
         except (OSError, PermissionError):
             pass
-    
+
     return files
 
 
@@ -314,26 +345,86 @@ def compare_files(
         local_info = local_files.get(path)
         
         if wintogo_info and not local_info:
+            # 如果wintogo是文件夹，检查是否有子路径（文件夹内有内容）
+            if wintogo_info.is_dir:
+                has_children_in_wintogo = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in wintogo_files.keys() if p != path
+                )
+                # 如果wintogo文件夹有内容，忽略文件夹本身（只同步其内部的内容）
+                if has_children_in_wintogo:
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+                
+                # 检查local端是否有同名文件夹的内容
+                has_children_in_local = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in local_files.keys()
+                )
+                # 如果local端有同名文件夹的内容，忽略wintogo空文件夹（避免覆盖）
+                if has_children_in_local:
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+            
             results.append(DiffResult(
                 relative_path=path,
                 status=FileStatus.WINTOGO_ONLY,
                 wintogo_info=wintogo_info
             ))
         elif not wintogo_info and local_info:
+            # 如果local是文件夹，检查是否有子路径（文件夹内有内容）
+            if local_info.is_dir:
+                has_children_in_local = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in local_files.keys() if p != path
+                )
+                # 如果local文件夹有内容，忽略文件夹本身（只处理其内部的内容）
+                if has_children_in_local:
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+                
+                # 检查wintogo端是否有同名文件夹的内容
+                has_children_in_wintogo = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in wintogo_files.keys()
+                )
+                # 如果wintogo端有同名文件夹的内容，忽略local空文件夹（避免覆盖）
+                if has_children_in_wintogo:
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+            
             results.append(DiffResult(
                 relative_path=path,
                 status=FileStatus.LOCAL_ONLY,
                 local_info=local_info
             ))
         else:
+            # 两端都有同名项目
             if wintogo_info.is_dir != local_info.is_dir:
+                # 类型冲突：一端是文件，另一端是目录
                 results.append(DiffResult(
                     relative_path=path,
                     status=FileStatus.CONFLICT,
                     wintogo_info=wintogo_info,
                     local_info=local_info
                 ))
+            elif wintogo_info.is_dir and local_info.is_dir:
+                # 两端都是空目录 — 无内容需要同步，跳过不加入 results
+                # 用户如需删除，通过 DirSyncDialog 的"删除两端此目录"选项处理
+                if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                    progress_callback(processed, total)
+                    last_progress_update = processed
+                continue
             elif wintogo_info.size != local_info.size:
+                # 文件大小不同
                 results.append(DiffResult(
                     relative_path=path,
                     status=FileStatus.CONFLICT,
@@ -341,6 +432,7 @@ def compare_files(
                     local_info=local_info
                 ))
             else:
+                # 文件大小相同，检查时间戳差异
                 if abs(wintogo_info.mtime - local_info.mtime) > 1:
                     results.append(DiffResult(
                         relative_path=path,
@@ -354,6 +446,207 @@ def compare_files(
                         status=FileStatus.SAME,
                         wintogo_info=wintogo_info,
                         local_info=local_info
+                    ))
+        
+        if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+            progress_callback(processed, total)
+            last_progress_update = processed
+    
+    return results
+
+
+def compare_files_unidirectional(
+    source_files: Dict[str, FileInfo],
+    target_files: Dict[str, FileInfo],
+    source_dir: str,
+    target_dir: str,
+    unidirectional_mode: str = "diff",
+    extra_items_mode: str = "keep",  # 新增参数："keep" 或 "delete"
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_interval: int = 100,
+    wintogo_dir: str = None  # 新增参数：介质目录路径，用于正确设置状态
+) -> List[DiffResult]:
+    """
+    单向同步的文件比较函数
+    
+    Args:
+        source_files: 源目录文件列表
+        target_files: 目标目录文件列表
+        source_dir: 源目录路径
+        target_dir: 目标目录路径
+        unidirectional_mode: 单向同步模式 ("diff" 或 "overwrite")
+        extra_items_mode: 多余项目处理模式 ("keep" 或 "delete")
+        progress_callback: 进度回调函数
+        progress_interval: 进度更新间隔
+        wintogo_dir: 介质目录路径（用于正确设置状态）
+    
+    Returns:
+        差异结果列表
+    """
+    results = []
+    all_paths = set(source_files.keys()) | set(target_files.keys())
+    total = len(all_paths)
+    processed = 0
+    last_progress_update = 0
+    
+    # 判断源是否是介质（用于正确设置状态）
+    source_is_wintogo = (wintogo_dir is not None and source_dir == wintogo_dir)
+    
+    for path in all_paths:
+        processed += 1
+        source_info = source_files.get(path)
+        target_info = target_files.get(path)
+        
+        # 源存在，目标不存在 - 需要同步到目标
+        if source_info and not target_info:
+            # 如果源是文件夹，检查是否有子路径（文件夹内有内容）
+            if source_info.is_dir:
+                has_children_in_source = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in source_files.keys() if p != path
+                )
+                # 如果源文件夹有内容，忽略文件夹本身（只同步其内部的内容）
+                if has_children_in_source:
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+                
+                # 检查目标端是否有同名文件夹的内容
+                has_children_in_target = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in target_files.keys()
+                )
+                # 如果目标端有同名文件夹的内容
+                if has_children_in_target:
+                    # 在差异同步模式下忽略源空文件夹（保留目标内容）
+                    # 在覆盖同步模式下也忽略源空文件夹（删除目标内容后，目标文件夹自然变成空文件夹）
+                    if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                        progress_callback(processed, total)
+                        last_progress_update = processed
+                    continue
+            
+            # 显示为源独有，状态显示"同步至目标"
+            results.append(DiffResult(
+                relative_path=path,
+                status=FileStatus.WINTOGO_ONLY if source_is_wintogo else FileStatus.LOCAL_ONLY,
+                wintogo_info=source_info if source_is_wintogo else None,
+                local_info=source_info if not source_is_wintogo else None
+            ))
+        # 源不存在，目标存在 - 目标独有项目
+        elif not source_info and target_info:
+            # 如果目标是文件夹，检查是否有子路径（文件夹内有内容）
+            if target_info.is_dir:
+                has_children_in_target = any(
+                    p.startswith(path + '/') or p.startswith(path + '\\')
+                    for p in target_files.keys() if p != path
+                )
+                # 如果目标文件夹有内容
+                if has_children_in_target:
+                    # 检查源端是否有同名文件夹的内容
+                    has_children_in_source = any(
+                        p.startswith(path + '/') or p.startswith(path + '\\')
+                        for p in source_files.keys()
+                    )
+                    # 如果源端有同名文件夹的内容
+                    if has_children_in_source:
+                        # 在差异同步模式下忽略目标文件夹（保留源内容）
+                        # 在覆盖同步模式下也忽略目标文件夹（源内容同步后，目标文件夹自然有内容）
+                        if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                            progress_callback(processed, total)
+                            last_progress_update = processed
+                        continue
+            
+            # 根据 extra_items_mode 处理目标独有项目
+            if extra_items_mode == "keep":
+                # "保留多余项目"模式：忽略目标多余项目
+                if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
+                    progress_callback(processed, total)
+                    last_progress_update = processed
+                continue
+            else:  # extra_items_mode == "delete"
+                # "删除多余项目"模式：显示为目标独有，列表标记为红色，状态显示"将被删除"
+                results.append(DiffResult(
+                    relative_path=path,
+                    status=FileStatus.LOCAL_ONLY if source_is_wintogo else FileStatus.WINTOGO_ONLY,
+                    wintogo_info=target_info if not source_is_wintogo else None,
+                    local_info=target_info if source_is_wintogo else None
+                ))
+        # 双方都存在
+        else:
+            if source_info.is_dir != target_info.is_dir:
+                # 类型冲突，需要同步源到目标
+                results.append(DiffResult(
+                    relative_path=path,
+                    status=FileStatus.CONFLICT,
+                    wintogo_info=source_info if source_is_wintogo else target_info,
+                    local_info=target_info if source_is_wintogo else source_info
+                ))
+            elif source_info.is_dir and target_info.is_dir:
+                # 两端都是目录
+                # 对于空目录，忽略时间戳差异，直接标记为SAME
+                # 因为空目录本身没有内容，时间戳不影响其功能
+                results.append(DiffResult(
+                    relative_path=path,
+                    status=FileStatus.SAME,
+                    wintogo_info=source_info if source_is_wintogo else target_info,
+                    local_info=target_info if source_is_wintogo else source_info
+                ))
+            elif source_info.size != target_info.size:
+                # 大小不同
+                if unidirectional_mode == "diff":
+                    # 差异同步模式：检查时间戳，若目标新于源，则忽略此项目
+                    if source_info.mtime > target_info.mtime:
+                        # 源新于目标，显示为差异项，状态显示"覆盖目标"
+                        results.append(DiffResult(
+                            relative_path=path,
+                            status=FileStatus.CONFLICT,
+                            wintogo_info=source_info if source_is_wintogo else target_info,
+                            local_info=target_info if source_is_wintogo else source_info
+                        ))
+                    else:
+                        # 目标新于源，忽略此项目（不添加到结果列表）
+                        pass
+                else:  # unidirectional_mode == "overwrite"
+                    # 覆盖同步模式：无视新旧，始终源覆盖目标
+                    results.append(DiffResult(
+                        relative_path=path,
+                        status=FileStatus.CONFLICT,
+                        wintogo_info=source_info if source_is_wintogo else target_info,
+                        local_info=target_info if source_is_wintogo else source_info
+                    ))
+            else:
+                # 大小相同，检查时间戳
+                if abs(source_info.mtime - target_info.mtime) > 1:
+                    # 时间戳不同
+                    if unidirectional_mode == "diff":
+                        # 差异同步模式：若源新于目标，则覆盖目标；若目标新于源，则忽略此项目
+                        if source_info.mtime > target_info.mtime:
+                            # 源新于目标，显示为差异项，状态显示"覆盖目标"
+                            results.append(DiffResult(
+                                relative_path=path,
+                                status=FileStatus.MTIME_DIFF,
+                                wintogo_info=source_info if source_is_wintogo else target_info,
+                                local_info=target_info if source_is_wintogo else source_info
+                            ))
+                        else:
+                            # 目标新于源，忽略此项目（不添加到结果列表）
+                            pass
+                    else:  # unidirectional_mode == "overwrite"
+                        # 覆盖同步模式：无视新旧，始终源覆盖目标
+                        results.append(DiffResult(
+                            relative_path=path,
+                            status=FileStatus.MTIME_DIFF,
+                            wintogo_info=source_info if source_is_wintogo else target_info,
+                            local_info=target_info if source_is_wintogo else source_info
+                        ))
+                else:
+                    # 完全相同，无需同步
+                    results.append(DiffResult(
+                        relative_path=path,
+                        status=FileStatus.SAME,
+                        wintogo_info=source_info if source_is_wintogo else target_info,
+                        local_info=target_info if source_is_wintogo else source_info
                     ))
         
         if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
@@ -418,34 +711,132 @@ def copy_file(source_path: str, dest_path: str, max_retries: int = 3, retry_dela
 
 def delete_file(file_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> bool:
     try:
-        if os.path.exists(file_path):
-            for attempt in range(max_retries):
-                try:
-                    os.remove(file_path)
-                    break
-                except (OSError, PermissionError) as e:
-                    if attempt < max_retries - 1:
-                        if is_file_locked(file_path):
-                            print(f"File locked, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
-                            time.sleep(retry_delay)
-                        else:
-                            print(f"Error deleting {file_path}: {e}")
-                            return False
+        # 注意：不能用 os.path.exists 前置判断，Windows 上权限不足时 exists 可能返回 False
+        # 始终尝试 os.remove，FileNotFoundError 说明文件已不存在，视为成功
+        
+        # Windows: 先移除 READONLY / SYSTEM / HIDDEN 等可能阻止删除的属性
+        if sys.platform == 'win32':
+            try:
+                attrs = get_file_attributes(file_path)
+                # 仅当 GetFileAttributesW 返回有效值时尝试修改属性
+                if attrs != -1:
+                    REMOVE_MASK = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN
+                    if attrs & REMOVE_MASK:
+                        set_file_attributes(file_path, attrs & ~REMOVE_MASK)
+            except Exception:
+                pass
+
+        for attempt in range(max_retries):
+            try:
+                os.remove(file_path)
+                break
+            except FileNotFoundError:
+                # 文件已不存在，视为成功
+                break
+            except (OSError, PermissionError) as e:
+                if attempt < max_retries - 1:
+                    if is_file_locked(file_path):
+                        print(f"File locked, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
                     else:
                         print(f"Error deleting {file_path}: {e}")
                         return False
-        
-        parent = os.path.dirname(file_path)
-        while parent and len(parent) > 3:
-            try:
-                os.rmdir(parent)
-                parent = os.path.dirname(parent)
-            except OSError:
-                break
+                else:
+                    print(f"Error deleting {file_path}: {e}")
+                    return False
+
+        # 不在删除文件后尝试删除父目录
+        # 空目录的删除应该在同步完成后统一处理
         return True
     except (OSError, PermissionError) as e:
         print(f"Error deleting {file_path}: {e}")
         return False
+
+
+def _remove_empty_path_chain(path: str) -> int:
+    """
+    从给定路径开始，向上递归尝试删除空目录。
+    删除成功后继续尝试删除父目录，直到目录非空或到达顶级。
+
+    Args:
+        path: 要删除的目录路径
+
+    Returns:
+        成功删除的目录数量
+    """
+    total = 0
+    current = os.path.normpath(path)
+    while True:
+        try:
+            os.rmdir(current)
+            total += 1
+            print(f"Removed empty directory: {current}")
+        except OSError:
+            # 目录非空、权限不足或不存在 → 停止向上清理
+            break
+        parent = os.path.dirname(current)
+        # 如果已经到达驱动器根目录或上级不变，停止
+        if parent == current:
+            break
+        current = parent
+    return total
+
+
+def remove_empty_directories(base_dir: str) -> int:
+    """
+    递归删除指定目录下的所有空目录（从叶子目录开始向上删除）
+    会多次调用直到所有空目录都被删除
+    只删除 base_dir 范围内的空目录，不会越界处理上级文件
+
+    Args:
+        base_dir: 基础目录路径（同步目录）
+
+    Returns:
+        删除的空目录总数
+    """
+    total_removed = 0
+
+    # 多次调用直到没有空目录可以删除
+    while True:
+        removed_count = 0
+
+        # 从最深层目录开始向上删除，确保叶子空文件夹先被删除
+        for root, dirs, files in os.walk(base_dir, topdown=False):
+            # 跳过基础目录本身（同步目录）
+            if root == base_dir:
+                continue
+
+            # 确保删除的目录是 base_dir 的子目录（安全检查）
+            # 使用路径比较确保不会越界处理上级文件
+            try:
+                # 获取相对路径，如果失败说明不是子目录
+                relative_path = os.path.relpath(root, base_dir)
+                # 如果相对路径以 '..' 开头，说明不是子目录
+                if relative_path.startswith('..'):
+                    print(f"Skipping directory outside sync range: {root}")
+                    continue
+            except ValueError:
+                # 不同驱动器或路径错误，跳过
+                print(f"Skipping invalid path: {root}")
+                continue
+
+            # 如果目录为空（没有文件和子目录）
+            if not files and not dirs:
+                try:
+                    os.rmdir(root)
+                    removed_count += 1
+                    print(f"Removed empty directory: {root}")
+                except OSError as e:
+                    # 目录可能不为空或权限不足，跳过
+                    print(f"Failed to remove directory {root}: {e}")
+
+        total_removed += removed_count
+
+        # 如果这次没有删除任何目录，说明已经没有空目录了，退出循环
+        if removed_count == 0:
+            break
+
+    return total_removed
 
 
 def copy_file_with_progress(
@@ -582,7 +973,7 @@ def sync_file(
                     if os.path.islink(wintogo_path):
                         os.remove(wintogo_path)
                     elif os.path.exists(wintogo_path):
-                        shutil.rmtree(wintogo_path)
+                        rmtree_safe(wintogo_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error deleting symlink {wintogo_path}: {e}")
@@ -603,7 +994,7 @@ def sync_file(
                     if os.path.islink(local_path):
                         os.remove(local_path)
                     elif os.path.exists(local_path):
-                        shutil.rmtree(local_path)
+                        rmtree_safe(local_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error deleting symlink {local_path}: {e}")
@@ -632,9 +1023,9 @@ def sync_file(
             elif direction == "delete_both":
                 try:
                     if os.path.islink(wintogo_path) or os.path.exists(wintogo_path):
-                        os.remove(wintogo_path) if os.path.islink(wintogo_path) else shutil.rmtree(wintogo_path)
+                        os.remove(wintogo_path) if os.path.islink(wintogo_path) else rmtree_safe(wintogo_path)
                     if os.path.islink(local_path) or os.path.exists(local_path):
-                        os.remove(local_path) if os.path.islink(local_path) else shutil.rmtree(local_path)
+                        os.remove(local_path) if os.path.islink(local_path) else rmtree_safe(local_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error deleting symlinks: {e}")
@@ -660,12 +1051,12 @@ def sync_file(
                     if os.path.isfile(local_path):
                         os.remove(local_path)
                     elif os.path.isdir(local_path):
-                        shutil.rmtree(local_path)
+                        rmtree_safe(local_path)
                     os.makedirs(local_path, exist_ok=True)
                     sync_dir_attributes(wintogo_path, local_path)
                 else:
                     if os.path.isdir(local_path):
-                        shutil.rmtree(local_path)
+                        rmtree_safe(local_path)
                     return copy_file_with_progress(wintogo_path, local_path, progress_callback)
                 return True
             except (OSError, PermissionError) as e:
@@ -677,12 +1068,12 @@ def sync_file(
                     if os.path.isfile(wintogo_path):
                         os.remove(wintogo_path)
                     elif os.path.isdir(wintogo_path):
-                        shutil.rmtree(wintogo_path)
+                        rmtree_safe(wintogo_path)
                     os.makedirs(wintogo_path, exist_ok=True)
                     sync_dir_attributes(local_path, wintogo_path)
                 else:
                     if os.path.isdir(wintogo_path):
-                        shutil.rmtree(wintogo_path)
+                        rmtree_safe(wintogo_path)
                     return copy_file_with_progress(local_path, wintogo_path, progress_callback)
                 return True
             except (OSError, PermissionError) as e:
@@ -691,11 +1082,11 @@ def sync_file(
         elif direction == "delete_both":
             try:
                 if os.path.isdir(wintogo_path):
-                    shutil.rmtree(wintogo_path)
+                    rmtree_safe(wintogo_path)
                 elif os.path.isfile(wintogo_path):
                     os.remove(wintogo_path)
                 if os.path.isdir(local_path):
-                    shutil.rmtree(local_path)
+                    rmtree_safe(local_path)
                 elif os.path.isfile(local_path):
                     os.remove(local_path)
                 return True
@@ -716,7 +1107,7 @@ def sync_file(
                     return False
             elif direction == "delete_wintogo":
                 try:
-                    shutil.rmtree(wintogo_path)
+                    rmtree_safe(wintogo_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error deleting directory {wintogo_path}: {e}")
@@ -732,10 +1123,17 @@ def sync_file(
                     return False
             elif direction == "delete_local":
                 try:
-                    shutil.rmtree(local_path)
+                    rmtree_safe(local_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error deleting directory {local_path}: {e}")
+                    return False
+            elif direction == "delete_wintogo":
+                try:
+                    rmtree_safe(wintogo_path)
+                    return True
+                except (OSError, PermissionError) as e:
+                    print(f"Error deleting directory {wintogo_path}: {e}")
                     return False
         elif diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
             if direction == "wintogo_to_local":
@@ -755,9 +1153,9 @@ def sync_file(
             elif direction == "delete_both":
                 try:
                     if os.path.isdir(wintogo_path):
-                        shutil.rmtree(wintogo_path)
+                        rmtree_safe(wintogo_path)
                     if os.path.isdir(local_path):
-                        shutil.rmtree(local_path)
+                        rmtree_safe(local_path)
                     return True
                 except (OSError, PermissionError) as e:
                     print(f"Error deleting directories: {e}")
@@ -774,6 +1172,8 @@ def sync_file(
             return copy_file_with_progress(local_path, wintogo_path, progress_callback)
         elif direction == "delete_local":
             return delete_file(local_path)
+        elif direction == "delete_wintogo":
+            return delete_file(wintogo_path)
     elif diff.status == FileStatus.CONFLICT:
         if direction == "wintogo_to_local":
             return copy_file_with_progress(wintogo_path, local_path, progress_callback)

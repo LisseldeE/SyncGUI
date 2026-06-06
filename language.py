@@ -12,6 +12,9 @@ LANGUAGES = {
         # 窗口标题
         "app_title": "SyncGUI",
         "header_subtitle": "移动介质 ↔ 本地",
+        "header_subtitle_bidirectional": "移动介质 ↔ 本地",
+        "header_subtitle_to_local": "移动介质 → 本地",
+        "header_subtitle_to_removable": "移动介质 ← 本地",
         
         # 目录设置
         "dir_group": "目录设置",
@@ -114,9 +117,19 @@ LANGUAGES = {
         "btn_cancel_sync": "❌ 取消本次同步",
         "btn_about": "关于",
         
+        # 同步模式
+        "sync_type_bidirectional": "双向同步",
+        "sync_type_unidirectional": "单向同步",
+        "unidirectional_mode_diff": "差异同步",
+        "unidirectional_mode_overwrite": "覆盖同步",
+        "direction_removable_to_local": "介质 → 本地",
+        "direction_local_to_removable": "本地 → 介质",
+        "extra_items_keep": "保留多余项目",
+        "extra_items_delete": "删除多余项目",
+        
         # 关于弹窗
         "about_title": "关于 SyncGUI",
-        "about_version": "版本：SyncGUI_R9",
+        "about_version": "版本：SyncGUI_R10",
         "about_author": "作者：Lisselde_E",
         "about_github": "GitHub：https://github.com/LisseldeE",
         "about_email": "邮箱：Lisselde.E@outlook.com",
@@ -136,6 +149,9 @@ LANGUAGES = {
         # Window title
         "app_title": "SyncGUI",
         "header_subtitle": "Removable ↔ Local",
+        "header_subtitle_bidirectional": "Removable ↔ Local",
+        "header_subtitle_to_local": "Removable → Local",
+        "header_subtitle_to_removable": "Removable ← Local",
         
         # Directory settings
         "dir_group": "Directory Settings",
@@ -238,9 +254,19 @@ LANGUAGES = {
         "btn_cancel_sync": "❌ Cancel Sync",
         "btn_about": "About",
         
+        # Sync mode
+        "sync_type_bidirectional": "Bidirectional Sync",
+        "sync_type_unidirectional": "Unidirectional Sync",
+        "unidirectional_mode_diff": "Diff Sync",
+        "unidirectional_mode_overwrite": "Overwrite Sync",
+        "direction_removable_to_local": "Removable → Local",
+        "direction_local_to_removable": "Local → Removable",
+        "extra_items_keep": "Keep Extra Items",
+        "extra_items_delete": "Delete Extra Items",
+        
         # About dialog
         "about_title": "About SyncGUI",
-        "about_version": "Version: SyncGUI_R9",
+        "about_version": "Version: SyncGUI_R10",
         "about_author": "Author: Lisselde_E",
         "about_github": "GitHub: https://github.com/LisseldeE",
         "about_email": "Email: Lisselde.E@outlook.com",
