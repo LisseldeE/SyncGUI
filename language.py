@@ -135,6 +135,17 @@ LANGUAGES = {
         "about_email": "邮箱：Lisselde.E@outlook.com",
         "about_description": "一个简洁高效的本地与移动介质双向文件同步工具",
         
+        # 检查更新
+        "btn_check_update": "检查更新",
+        "update_title": "检查更新",
+        "update_no_tags": "未找到版本标签",
+        "update_version_error": "无法解析当前版本号",
+        "update_tag_error": "无法解析远程版本号",
+        "update_found": "发现新版本 {}！\n是否前往GitHub下载？",
+        "update_latest": "当前已是最新版本",
+        "update_network_error": "网络错误：{}\n请检查网络连接",
+        "update_error": "检查更新失败：{}",
+        
         # 忽略规则
         "ignore_title": "当前忽略规则：",
         "ignore_hint": "提示：目录以 / 结尾，扩展名以 . 开头",
@@ -271,6 +282,17 @@ LANGUAGES = {
         "about_github": "GitHub: https://github.com/LisseldeE",
         "about_email": "Email: Lisselde.E@outlook.com",
         "about_description": "A simple and efficient bidirectional file synchronization tool",
+        
+        # Check update
+        "btn_check_update": "Check Update",
+        "update_title": "Check Update",
+        "update_no_tags": "No version tags found",
+        "update_version_error": "Cannot parse current version number",
+        "update_tag_error": "Cannot parse remote version number",
+        "update_found": "Found new version {}!\nDo you want to go to GitHub to download?",
+        "update_latest": "Current version is up to date",
+        "update_network_error": "Network error: {}\nPlease check your network connection",
+        "update_error": "Check update failed: {}",
         
         # Ignore rules
         "ignore_title": "Current ignore rules:",

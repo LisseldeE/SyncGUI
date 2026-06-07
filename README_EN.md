@@ -84,9 +84,26 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 
 ### Sync Modes
 
+#### Bidirectional Sync
 - **Default Mode** - Popup for each difference file to ask sync direction
 - **Newest First** - Automatically choose newer version to sync, reducing popup prompts
-- **Unidirectional Sync** - Supports one-way sync from removable to local or local to removable, with diff/overwrite mode options, and keep/delete extra items toggle
+
+#### Unidirectional Sync
+Supports one-way sync from removable to local or local to removable, with two sub-modes:
+
+**Diff Sync Mode**:
+- Source missing items: Based on "Keep/Delete Extra Items" button
+- Target missing items: Automatically fill
+- Difference items: If source is newer than target, overwrite; if target is newer than source, ignore
+
+**Overwrite Sync Mode**:
+- Source missing items: Based on "Keep/Delete Extra Items" button
+- Target missing items: Automatically fill
+- Difference items: Ignore timestamps, always source overwrites target
+
+**Extra Items Handling**:
+- "Keep Extra Items" (Green): Keep extra files on target side
+- "Delete Extra Items" (Red): Delete extra files on target side
 
 ## Interface
 
@@ -95,6 +112,8 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Support for viewing detailed file lists
 - Support Chinese/English interface switching (click language button)
 - All settings automatically saved, restored on next startup
+- Button click animation effect (move down 1px when pressed)
+- Mode switch button fade-in/fade-out transition animation (200ms smooth transition)
 
 ## Technical Implementation
 
@@ -118,6 +137,9 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Fixed popup logic and option content during sync
 - Fully standardized file sync logic
 - Completely refactored the file deletion logic and the handling logic for empty parent directories
+- Added missing statistics items in sync confirmation window
+- Added transition animation and click effect for interface button elements
+- Added check update feature
 
 ### R9 (2026.6.4)
 - Fixed high DPI scaling issue (150% scaling oversized interface)

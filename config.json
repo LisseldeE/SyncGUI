@@ -1,7 +1,10 @@
 {
   "wintogo_dir": "C:/SyncHub/DeskTop/1",
   "local_dir": "C:/SyncHub/DeskTop/2",
-  "ignore_rules": [],
+  "ignore_rules": [
+    "hello/",
+    "**/.git/"
+  ],
   "sync_rules": [
     "Python/",
     "Servers/"
@@ -10,6 +13,6 @@
   "sync_mode": "default",
   "sync_type": "bidirectional",
   "unidirectional_mode": "diff",
-  "sync_direction": "local_to_removable",
-  "extra_items_mode": "delete"
+  "sync_direction": "removable_to_local",
+  "extra_items_mode": "keep"
 }

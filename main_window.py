@@ -18,9 +18,10 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QFileDialog, QTableWidget,
     QTableWidgetItem, QProgressBar, QMessageBox, QHeaderView,
     QDialog, QDialogButtonBox, QGroupBox, QRadioButton, QButtonGroup,
-    QFrame, QSizePolicy, QCheckBox, QListWidget, QListWidgetItem
+    QFrame, QSizePolicy, QCheckBox, QListWidget, QListWidgetItem,
+    QGraphicsOpacityEffect
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint, QPropertyAnimation, QByteArray
 from PyQt5.QtGui import QColor, QFont, QPalette
 
 from sync_core import (
@@ -28,6 +29,39 @@ from sync_core import (
     rmtree_safe, _remove_empty_path_chain, FileStatus, DiffResult
 )
 from language import get_text, LANGUAGES
+
+
+class AnimatedButton(QPushButton):
+    """
+    带动画效果的按钮类
+    - 点击时有按下效果（向下移动1px）
+    """
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        
+        # 原始位置
+        self.original_pos = None
+        
+        # 点击动画标记
+        self.is_pressed = False
+        
+    def mousePressEvent(self, event):
+        """鼠标按下事件 - 触发点击动画"""
+        if self.original_pos is None:
+            self.original_pos = self.pos()
+        
+        self.is_pressed = True
+        # 向下移动1px，模拟按下效果
+        self.move(QPoint(self.original_pos.x(), self.original_pos.y() + 1))
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """鼠标释放事件 - 恢复位置"""
+        self.is_pressed = False
+        # 恢复到原始位置
+        if self.original_pos is not None:
+            self.move(self.original_pos)
+        super().mouseReleaseEvent(event)
 
 
 def get_app_dir():
@@ -1872,7 +1906,7 @@ class AboutDialog(QDialog):
         self.setModal(True)
         # 移除右上角的问号按钮
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setFixedSize(400, 280)
+        self.setFixedSize(400, 320)  # 增加高度以容纳检查更新按钮
         self._init_ui()
     
     def _init_ui(self):
@@ -1949,14 +1983,38 @@ class AboutDialog(QDialog):
         
         layout.addStretch()
         
-        # 关闭按钮（增加高度以适应中文文字）
+        # 检查更新按钮和关闭按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        # 检查更新按钮
+        check_update_btn = QPushButton(get_text("btn_check_update", self.lang))
+        check_update_btn.setMinimumWidth(120)
+        check_update_btn.setFixedHeight(36)
+        check_update_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #339af0;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 0 10px;
+            }
+            QPushButton:hover {
+                background-color: #228be6;
+            }
+        """)
+        check_update_btn.adjustSize()
+        check_update_btn.clicked.connect(self._check_update)
+        btn_layout.addWidget(check_update_btn)
+        
+        btn_layout.addSpacing(10)
+        
+        # 关闭按钮
         close_btn = QPushButton(get_text("btn_close", self.lang))
         close_btn.setFixedSize(100, 36)
         close_btn.clicked.connect(self.accept)
-        
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
         btn_layout.addWidget(close_btn)
+        
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
@@ -1973,6 +2031,142 @@ class AboutDialog(QDialog):
         from PyQt5.QtWidgets import QApplication
         clipboard = QApplication.clipboard()
         clipboard.setText("Lisselde.E@outlook.com")
+    
+    def _check_update(self):
+        """检查更新"""
+        import urllib.request
+        import json
+        import re
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QDesktopServices
+        
+        try:
+            # 获取GitHub仓库的tags列表
+            url = "https://api.github.com/repos/LisseldeE/SyncGUI/tags"
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', 'SyncGUI')
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+            
+            if not data:
+                QMessageBox.information(self, get_text("update_title", self.lang), 
+                                       get_text("update_no_tags", self.lang))
+                return
+            
+            # 找到最新的tag（假设tags按时间倒序排列）
+            latest_tag = data[0]['name']
+            
+            # 从当前版本信息中提取版本号（如"版本：SyncGUI_R10"）
+            current_version_text = get_text("about_version", self.lang)
+            current_version_match = re.search(r'R(\d+)', current_version_text)
+            
+            if not current_version_match:
+                QMessageBox.warning(self, get_text("update_title", self.lang),
+                                   get_text("update_version_error", self.lang))
+                return
+            
+            current_version = int(current_version_match.group(1))
+            
+            # 从最新tag中提取版本号（如"R10"）
+            latest_version_match = re.search(r'R(\d+)', latest_tag)
+            
+            if not latest_version_match:
+                QMessageBox.warning(self, get_text("update_title", self.lang),
+                                   get_text("update_tag_error", self.lang))
+                return
+            
+            latest_version = int(latest_version_match.group(1))
+            
+            # 比较版本号
+            if latest_version > current_version:
+                # 发现新版本，弹窗询问是否前往下载
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle(get_text("update_title", self.lang))
+                msg_box.setText(get_text("update_found", self.lang).format(latest_tag))
+                msg_box.setIcon(QMessageBox.NoIcon)
+                
+                # 设置整体样式
+                msg_box.setStyleSheet("""
+                    QMessageBox {
+                        font-size: 11px;
+                    }
+                    QMessageBox QLabel {
+                        color: #495057;
+                        font-size: 11px;
+                        padding: 10px;
+                    }
+                """)
+                
+                # 自定义按钮
+                yes_btn = msg_box.addButton(get_text("btn_yes", self.lang), QMessageBox.YesRole)
+                no_btn = msg_box.addButton(get_text("btn_no", self.lang), QMessageBox.NoRole)
+                
+                # 设置按钮样式
+                yes_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #51cf66;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 8px 24px;
+                        min-width: 80px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background-color: #40c057;
+                    }
+                """)
+                
+                no_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ff6b6b;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 8px 24px;
+                        min-width: 80px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background-color: #fa5252;
+                    }
+                """)
+                
+                msg_box.exec_()
+                
+                if msg_box.clickedButton() == yes_btn:
+                    # 打开GitHub releases页面
+                    QDesktopServices.openUrl(QUrl("https://github.com/LisseldeE/SyncGUI/releases"))
+            else:
+                # 当前已是最新版本（移除图标）
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle(get_text("update_title", self.lang))
+                msg_box.setText(get_text("update_latest", self.lang))
+                msg_box.setIcon(QMessageBox.NoIcon)
+                
+                # 设置整体样式
+                msg_box.setStyleSheet("""
+                    QMessageBox {
+                        font-size: 11px;
+                    }
+                    QMessageBox QLabel {
+                        color: #495057;
+                        font-size: 11px;
+                        padding: 10px;
+                    }
+                """)
+                
+                msg_box.exec_()
+        
+        except urllib.error.URLError as e:
+            # 网络错误
+            QMessageBox.warning(self, get_text("update_title", self.lang),
+                               get_text("update_network_error", self.lang).format(str(e)))
+        except Exception as e:
+            # 其他错误
+            QMessageBox.warning(self, get_text("update_title", self.lang),
+                               get_text("update_error", self.lang).format(str(e)))
 
 
 class MainWindow(QMainWindow):
@@ -2029,7 +2223,7 @@ class MainWindow(QMainWindow):
         
         header_layout.addSpacing(16)
         
-        self.lang_btn = QPushButton(get_text("language_btn", self.current_lang))
+        self.lang_btn = AnimatedButton(get_text("language_btn", self.current_lang))
         self.lang_btn.setMinimumSize(70, 32)
         self.lang_btn.setStyleSheet("""
             QPushButton {
@@ -2047,9 +2241,8 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.lang_btn)
         
         # 关于按钮（小图标）
-        self.about_btn = QPushButton("i")
+        self.about_btn = AnimatedButton("i")
         self.about_btn.setFixedSize(32, 32)
-        self.about_btn.setToolTip(get_text("btn_about", self.current_lang))
         self.about_btn.setStyleSheet("""
             QPushButton {
                 background-color: #f8f9fa;
@@ -2087,7 +2280,7 @@ class MainWindow(QMainWindow):
         self.wintogo_edit.setPlaceholderText(get_text("removable_placeholder", self.current_lang))
         self.wintogo_edit.textChanged.connect(self._on_path_changed)
         wintogo_layout.addWidget(self.wintogo_edit)
-        self.wintogo_btn = QPushButton(get_text("browse", self.current_lang))
+        self.wintogo_btn = AnimatedButton(get_text("browse", self.current_lang))
         self.wintogo_btn.setObjectName("browseBtn")
         self.wintogo_btn.setMinimumWidth(80)
         self.wintogo_btn.clicked.connect(self._select_wintogo)
@@ -2103,7 +2296,7 @@ class MainWindow(QMainWindow):
         self.local_edit.setPlaceholderText(get_text("local_placeholder", self.current_lang))
         self.local_edit.textChanged.connect(self._on_path_changed)
         local_layout.addWidget(self.local_edit)
-        self.local_btn = QPushButton(get_text("browse", self.current_lang))
+        self.local_btn = AnimatedButton(get_text("browse", self.current_lang))
         self.local_btn.setObjectName("browseBtn")
         self.local_btn.setMinimumWidth(80)
         self.local_btn.clicked.connect(self._select_local)
@@ -2117,7 +2310,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.setSpacing(12)
         
         # 同步模式切换按钮（双向/单向）
-        self.sync_type_btn = QPushButton(get_text("sync_type_bidirectional", self.current_lang))
+        self.sync_type_btn = AnimatedButton(get_text("sync_type_bidirectional", self.current_lang))
         self.sync_type_btn.setObjectName("browseBtn")
         self.sync_type_btn.setMinimumHeight(44)
         self.sync_type_btn.setMinimumWidth(110)
@@ -2125,7 +2318,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.sync_type_btn)
         
         # 默认模式按钮（默认模式/最新优先）
-        self.mode_btn = QPushButton(get_text("mode_default", self.current_lang))
+        self.mode_btn = AnimatedButton(get_text("mode_default", self.current_lang))
         self.mode_btn.setObjectName("browseBtn")
         self.mode_btn.setMinimumHeight(44)
         self.mode_btn.setMinimumWidth(110)
@@ -2133,7 +2326,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.mode_btn)
         
         # 单向模式子模式按钮（差异同步/覆盖同步）
-        self.unidirectional_mode_btn = QPushButton(get_text("unidirectional_mode_diff", self.current_lang))
+        self.unidirectional_mode_btn = AnimatedButton(get_text("unidirectional_mode_diff", self.current_lang))
         self.unidirectional_mode_btn.setObjectName("browseBtn")
         self.unidirectional_mode_btn.setMinimumHeight(44)
         self.unidirectional_mode_btn.setMinimumWidth(110)
@@ -2142,7 +2335,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.unidirectional_mode_btn)
         
         # 方向切换按钮（介质→本地/本地→介质）
-        self.direction_btn = QPushButton(get_text("direction_removable_to_local", self.current_lang))
+        self.direction_btn = AnimatedButton(get_text("direction_removable_to_local", self.current_lang))
         self.direction_btn.setObjectName("browseBtn")
         self.direction_btn.setMinimumHeight(44)
         self.direction_btn.setMinimumWidth(150)
@@ -2151,7 +2344,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.direction_btn)
         
         # 多余项目处理按钮（保留多余项目/删除多余项目）
-        self.extra_items_btn = QPushButton(get_text("extra_items_keep", self.current_lang))
+        self.extra_items_btn = AnimatedButton(get_text("extra_items_keep", self.current_lang))
         self.extra_items_btn.setObjectName("browseBtn")
         self.extra_items_btn.setMinimumHeight(44)
         self.extra_items_btn.setMinimumWidth(130)
@@ -2160,7 +2353,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.extra_items_btn)
         
         # 忽略规则按钮
-        self.ignore_btn = QPushButton(get_text("ignore_btn", self.current_lang))
+        self.ignore_btn = AnimatedButton(get_text("ignore_btn", self.current_lang))
         self.ignore_btn.setObjectName("browseBtn")
         self.ignore_btn.setMinimumHeight(44)
         self.ignore_btn.setMinimumWidth(100)
@@ -2168,7 +2361,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.ignore_btn)
         
         # 同步规则按钮
-        self.sync_rule_btn = QPushButton(get_text("sync_rule_btn", self.current_lang))
+        self.sync_rule_btn = AnimatedButton(get_text("sync_rule_btn", self.current_lang))
         self.sync_rule_btn.setObjectName("browseBtn")
         self.sync_rule_btn.setMinimumHeight(44)
         self.sync_rule_btn.setMinimumWidth(100)
@@ -2182,14 +2375,14 @@ class MainWindow(QMainWindow):
         btn_layout_row2 = QHBoxLayout()
         btn_layout_row2.setSpacing(12)
         
-        self.scan_btn = QPushButton(get_text("scan_btn", self.current_lang))
+        self.scan_btn = AnimatedButton(get_text("scan_btn", self.current_lang))
         self.scan_btn.setObjectName("scanBtn")
         self.scan_btn.setFixedHeight(44)
         self.scan_btn.setFixedWidth(140)
         self.scan_btn.clicked.connect(self._start_scan)
         btn_layout_row2.addWidget(self.scan_btn)
         
-        self.sync_btn = QPushButton(get_text("sync_btn", self.current_lang))
+        self.sync_btn = AnimatedButton(get_text("sync_btn", self.current_lang))
         self.sync_btn.setObjectName("syncBtn")
         self.sync_btn.setFixedHeight(44)
         self.sync_btn.setFixedWidth(140)
@@ -2420,28 +2613,79 @@ class MainWindow(QMainWindow):
         # 自动触发扫描差异
         self._auto_scan_on_change()
     
-    def _update_buttons_visibility(self):
-        """更新按钮显示/隐藏逻辑"""
-        if self.sync_type == "unidirectional":
-            # 单向模式下：隐藏默认模式按钮和同步规则按钮，显示单向模式子模式按钮、方向切换按钮和多余项目处理按钮
-            self.mode_btn.setVisible(False)
-            self.sync_rule_btn.setVisible(False)
-            self.unidirectional_mode_btn.setVisible(True)
-            self.direction_btn.setVisible(True)
-            self.extra_items_btn.setVisible(True)
-            # 更新方向按钮文本
-            if self.sync_direction == "local_to_removable":
-                self.direction_btn.setText(get_text("direction_local_to_removable", self.current_lang))
-            else:
-                self.direction_btn.setText(get_text("direction_removable_to_local", self.current_lang))
+    def _fade_widget(self, widget, visible, duration=200, callback=None):
+        """
+        淡入淡出动画
+        
+        Args:
+            widget: 要动画的控件
+            visible: True 显示（淡入），False 隐藏（淡出）
+            duration: 动画持续时间（毫秒）
+            callback: 动画完成后的回调函数
+        """
+        # 创建透明度效果
+        effect = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(effect)
+        
+        # 创建动画
+        animation = QPropertyAnimation(effect, QByteArray(b"opacity"))
+        animation.setDuration(duration)
+        
+        if visible:
+            # 淡入：从0到1
+            widget.setVisible(True)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
         else:
-            # 双向模式下：显示默认模式按钮，隐藏单向模式子模式按钮、方向切换按钮和多余项目处理按钮
-            self.mode_btn.setVisible(True)
-            # 同步规则按钮的显示由_update_mode_button控制
-            self._update_mode_button()
-            self.unidirectional_mode_btn.setVisible(False)
-            self.direction_btn.setVisible(False)
-            self.extra_items_btn.setVisible(False)
+            # 淡出：从1到0
+            animation.setStartValue(1.0)
+            animation.setEndValue(0.0)
+            # 动画完成后隐藏控件
+            animation.finished.connect(lambda: widget.setVisible(False))
+        
+        # 如果有回调函数，动画完成后执行
+        if callback:
+            animation.finished.connect(callback)
+        
+        animation.start()
+        
+        # 保存动画对象，防止被垃圾回收
+        if not hasattr(self, '_fade_animations'):
+            self._fade_animations = []
+        self._fade_animations.append(animation)
+    
+    def _update_buttons_visibility(self):
+        """更新按钮显示/隐藏逻辑（带淡入淡出动画，先隐藏再显示）"""
+        if self.sync_type == "unidirectional":
+            # 单向模式下：先隐藏双向模式按钮，等待动画完成后再显示单向模式按钮
+            # 第一步：淡出隐藏双向模式按钮
+            def fade_in_unidirectional_buttons():
+                """淡入显示单向模式按钮"""
+                self._fade_widget(self.unidirectional_mode_btn, True)
+                self._fade_widget(self.direction_btn, True)
+                self._fade_widget(self.extra_items_btn, True)
+                # 更新方向按钮文本
+                if self.sync_direction == "local_to_removable":
+                    self.direction_btn.setText(get_text("direction_local_to_removable", self.current_lang))
+                else:
+                    self.direction_btn.setText(get_text("direction_removable_to_local", self.current_lang))
+            
+            # 先淡出隐藏双向模式按钮，完成后淡入显示单向模式按钮
+            self._fade_widget(self.mode_btn, False, callback=fade_in_unidirectional_buttons)
+            self._fade_widget(self.sync_rule_btn, False)
+        else:
+            # 双向模式下：先隐藏单向模式按钮，等待动画完成后再显示双向模式按钮
+            # 第一步：淡出隐藏单向模式按钮
+            def fade_in_bidirectional_buttons():
+                """淡入显示双向模式按钮"""
+                self._fade_widget(self.mode_btn, True)
+                # 同步规则按钮的显示由_update_mode_button控制
+                self._update_mode_button()
+            
+            # 先淡出隐藏单向模式按钮，完成后淡入显示双向模式按钮
+            self._fade_widget(self.unidirectional_mode_btn, False)
+            self._fade_widget(self.direction_btn, False)
+            self._fade_widget(self.extra_items_btn, False, callback=fade_in_bidirectional_buttons)
     
     def _toggle_mode(self):
         """切换同步模式"""
@@ -2454,7 +2698,7 @@ class MainWindow(QMainWindow):
         self._save_paths()
     
     def _update_mode_button(self):
-        """更新模式按钮显示"""
+        """更新模式按钮显示（带淡入淡出动画）"""
         if self.sync_mode == "newest":
             self.mode_btn.setText(get_text("mode_newest", self.current_lang))
             self.mode_btn.setStyleSheet("""
@@ -2469,7 +2713,7 @@ class MainWindow(QMainWindow):
                 }
             """)
             # 最新优先模式下隐藏同步规则按钮（不使用同步规则）
-            self.sync_rule_btn.setVisible(False)
+            self._fade_widget(self.sync_rule_btn, False)
         else:
             self.mode_btn.setText(get_text("mode_default", self.current_lang))
             self.mode_btn.setStyleSheet("""
@@ -2483,8 +2727,9 @@ class MainWindow(QMainWindow):
                     background-color: #dee2e6;
                 }
             """)
-            # 默认模式下显示同步规则按钮
-            self.sync_rule_btn.setVisible(True)
+            # 默认模式下显示同步规则按钮（仅在双向模式下）
+            if self.sync_type == "bidirectional":
+                self._fade_widget(self.sync_rule_btn, True)
         self.mode_btn.adjustSize()
     
     def _update_ui_language(self):
@@ -2517,7 +2762,6 @@ class MainWindow(QMainWindow):
         self.ignore_btn.adjustSize()
         self.sync_rule_btn.setText(get_text("sync_rule_btn", lang))
         self.sync_rule_btn.adjustSize()
-        self.about_btn.setToolTip(get_text("btn_about", lang))
         self._update_sync_type_button()
         self._update_unidirectional_mode_button()
         # 更新方向切换按钮文本
@@ -3139,26 +3383,42 @@ class MainWindow(QMainWindow):
         
         self._update_table()
         
+        # 统计源独有项目（WINTOGO_ONLY 和 LOCAL_ONLY）
         copy_count = len([r for r in self.diff_results 
                          if r.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)
                          and self.conflict_decisions.get(r.relative_path, "").startswith("to_")])
         delete_count = len([r for r in self.diff_results 
                            if r.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)
                            and self.conflict_decisions.get(r.relative_path, "").startswith("delete_")])
-        conflict_count = len([r for r in self.diff_results if r.status == FileStatus.CONFLICT])
-        mtime_count = len([r for r in self.diff_results if r.status == FileStatus.MTIME_DIFF])
+        
+        # 统计冲突项和时间差异项的同步数量
+        conflict_sync_count = len([r for r in self.diff_results 
+                                   if r.status == FileStatus.CONFLICT
+                                   and "_to_" in self.conflict_decisions.get(r.relative_path, "")])
+        conflict_delete_count = len([r for r in self.diff_results 
+                                     if r.status == FileStatus.CONFLICT
+                                     and self.conflict_decisions.get(r.relative_path, "") == "delete_both"])
+        mtime_sync_count = len([r for r in self.diff_results 
+                                if r.status == FileStatus.MTIME_DIFF
+                                and "_to_" in self.conflict_decisions.get(r.relative_path, "")])
+        mtime_delete_count = len([r for r in self.diff_results 
+                                  if r.status == FileStatus.MTIME_DIFF
+                                  and self.conflict_decisions.get(r.relative_path, "") == "delete_both"])
+        
+        # 统计跳过项目
         skip_count = len([r for r in self.diff_results 
                          if self.conflict_decisions.get(r.relative_path) == "skip"])
         
+        # 总同步数量 = 源独有 + 冲突项同步 + 时间差异项同步
+        sync_count = copy_count + conflict_sync_count + mtime_sync_count
+        # 总删除数量 = 源独有删除 + 冲突项删除 + 时间差异项删除
+        total_delete_count = delete_count + conflict_delete_count + mtime_delete_count
+        
         msg = f"确定要执行同步操作吗？\n\n"
-        if copy_count > 0:
-            msg += f"📋 复制文件: {copy_count} 个\n"
-        if delete_count > 0:
-            msg += f"🗑️ 删除文件: {delete_count} 个\n"
-        if conflict_count > 0:
-            msg += f"⚠️ 冲突处理: {conflict_count} 个\n"
-        if mtime_count > 0:
-            msg += f"⏰ 时间差异: {mtime_count} 个\n"
+        if sync_count > 0:
+            msg += f"📋 同步文件: {sync_count} 个\n"
+        if total_delete_count > 0:
+            msg += f"🗑️ 删除文件: {total_delete_count} 个\n"
         if skip_count > 0:
             msg += f"⏭️ 跳过: {skip_count} 个\n"
         msg += "\n此操作不可撤销！"
@@ -3277,19 +3537,32 @@ class MainWindow(QMainWindow):
         self._update_table()
         
         # 显示确认弹窗
-        copy_count = len([r for r in self.diff_results 
-                         if self.conflict_decisions.get(r.relative_path, "").startswith("to_")])
+        # 统计源独有项目（to_local 或 to_wintogo）
+        source_only_count = len([r for r in self.diff_results 
+                                 if self.conflict_decisions.get(r.relative_path, "") in ("to_local", "to_wintogo")])
+        # 统计差异项目（包含 "_to_" 的决策，如 wintogo_to_local, local_to_wintogo）
+        conflict_count = len([r for r in self.diff_results 
+                             if "_to_" in self.conflict_decisions.get(r.relative_path, "")])
+        # 统计删除项目（delete_local 或 delete_wintogo）
         delete_count = len([r for r in self.diff_results 
                            if self.conflict_decisions.get(r.relative_path, "").startswith("delete_")])
+        # 统计跳过项目
+        skip_count = len([r for r in self.diff_results 
+                         if self.conflict_decisions.get(r.relative_path) == "skip"])
+        
+        # 总同步数量 = 源独有 + 差异项
+        sync_count = source_only_count + conflict_count
         
         msg = lang == "zh" and \
-            f"确定要执行单向同步操作吗？\n\n" \
-            f"📋 复制文件: {copy_count} 个\n" or \
-            f"Confirm unidirectional sync operation?\n\n" \
-            f"📋 Copy files: {copy_count} items\n"
+            f"确定要执行单向同步操作吗？\n\n" or \
+            f"Confirm unidirectional sync operation?\n\n"
         
+        if sync_count > 0:
+            msg += lang == "zh" and f"📋 同步文件: {sync_count} 个\n" or f"📋 Sync files: {sync_count} items\n"
         if delete_count > 0:
             msg += lang == "zh" and f"🗑️ 删除文件: {delete_count} 个\n" or f"🗑️ Delete files: {delete_count} items\n"
+        if skip_count > 0:
+            msg += lang == "zh" and f"⏭️ 跳过: {skip_count} 个\n" or f"⏭️ Skip: {skip_count} items\n"
         
         msg += lang == "zh" and "\n此操作不可撤销！" or "\nThis operation cannot be undone!"
         

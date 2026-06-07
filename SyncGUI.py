@@ -15,6 +15,26 @@ from PyQt5.QtCore import Qt
 from main_window import MainWindow, STYLESHEET
 
 
+def get_resource_path(relative_path):
+    """
+    获取资源文件的绝对路径，兼容打包和未打包两种情况
+    
+    Args:
+        relative_path: 相对路径（如 '1.ico'）
+    
+    Returns:
+        资源文件的绝对路径
+    """
+    try:
+        # PyInstaller 打包后，会创建临时文件夹，路径存储在 _MEIPASS 中
+        base_path = sys._MEIPASS
+    except AttributeError:
+        # 未打包时，使用当前文件所在目录
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    return os.path.join(base_path, relative_path)
+
+
 def main():
     # 高DPI支持设置（必须在QApplication创建之前设置）
     # 使用PassThrough策略，避免过度缩放
@@ -40,7 +60,8 @@ def main():
     font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(font)
     
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '1.ico')
+    # 使用 get_resource_path 获取图标路径，兼容打包和未打包情况
+    icon_path = get_resource_path('1.ico')
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     
