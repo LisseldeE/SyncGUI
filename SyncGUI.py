@@ -14,6 +14,13 @@ from PyQt5.QtGui import QIcon, QFont
 from PyQt5.QtCore import Qt
 from main_window import MainWindow, STYLESHEET
 
+# Windows任务栏图标设置
+if sys.platform == 'win32':
+    import ctypes
+    # 设置应用程序ID，确保Windows任务栏正确显示图标
+    app_id = "Lisselde_E.SyncGUI.R10"
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+
 
 def get_resource_path(relative_path):
     """
@@ -54,6 +61,11 @@ def main():
     app.setStyle('Fusion')
     app.setStyleSheet(STYLESHEET)
     
+    # 设置应用程序信息（确保Windows任务栏图标正确显示）
+    app.setApplicationName("SyncGUI")
+    app.setApplicationVersion("R10")
+    app.setOrganizationName("Lisselde_E")
+    
     # 设置应用程序字体，启用抗锯齿
     # 根据系统DPI自动调整字体大小
     font = QFont("Microsoft YaHei", 9)
@@ -62,13 +74,33 @@ def main():
     
     # 使用 get_resource_path 获取图标路径，兼容打包和未打包情况
     icon_path = get_resource_path('1.ico')
+    
     if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
+        icon = QIcon(icon_path)
+        app.setWindowIcon(icon)
     
     window = MainWindow()
     if os.path.exists(icon_path):
         window.setWindowIcon(QIcon(icon_path))
     window.show()
+    
+    # Windows任务栏图标设置（必须在窗口显示后）
+    if sys.platform == 'win32' and os.path.exists(icon_path):
+        try:
+            import ctypes
+            # 获取GUI窗口句柄
+            hwnd = int(window.winId())
+            # 加载图标文件
+            hicon = ctypes.windll.user32.LoadImageW(
+                None, icon_path, 1,  # IMAGE_ICON
+                0, 0, 0x10  # LR_LOADFROMFILE
+            )
+            if hicon:
+                # 设置窗口图标
+                ctypes.windll.user32.SendMessageW(hwnd, 0x80, 0, hicon)  # WM_SETICON, ICON_SMALL
+                ctypes.windll.user32.SendMessageW(hwnd, 0x80, 1, hicon)  # WM_SETICON, ICON_BIG
+        except Exception:
+            pass
     
     sys.exit(app.exec_())
 

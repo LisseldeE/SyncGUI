@@ -1956,7 +1956,6 @@ class AboutDialog(QDialog):
             }
             QLabel:hover {
                 color: #228be6;
-                cursor: pointer;
             }
         """)
         github_label.setAlignment(Qt.AlignCenter)
@@ -1973,7 +1972,6 @@ class AboutDialog(QDialog):
             }
             QLabel:hover {
                 color: #339af0;
-                cursor: pointer;
             }
         """)
         email_label.setAlignment(Qt.AlignCenter)
