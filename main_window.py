@@ -183,26 +183,6 @@ QPushButton#syncBtn:hover {
 QPushButton#syncBtn:disabled {
     background-color: #adb5bd;
 }
-QTableWidget {
-    border: 1px solid #dee2e6;
-    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-    alternate-background-color: rgba(0, 0, 0, 0.05);
-}
-QTableWidget::item {
-    padding: 8px;
-    border: none;
-}
-QHeaderView::section {
-    padding: 10px;
-    border: none;
-    border-bottom: 1px solid #dee2e6;
-    border-right: 1px solid #dee2e6;
-    font-weight: 600;
-    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-}
-QHeaderView::section:last {
-    border-right: none;
-}
 QProgressBar {
     border: none;
     border-radius: 6px;
@@ -256,6 +236,21 @@ QMessageBox QPushButton[text="Cancel"]:hover {
     background-color: #f03e3e;
 }
 """
+
+
+def _is_dark_mode():
+    """自动检测 Windows 系统深色模式（参考 pyside6-AltRowStyle.md）"""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        )
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        winreg.CloseKey(key)
+        return value == 0  # 0 = 深色, 1 = 浅色
+    except Exception:
+        return False
 
 
 def load_config():
@@ -2349,6 +2344,7 @@ class MainWindow(QMainWindow):
         self.sync_rules = []
         self.sync_start_time = None
         self.sync_transferred_bytes = 0
+        self._delete_both_dirs = set()
         
         self._init_ui()
         self._load_saved_paths()
@@ -2579,30 +2575,99 @@ class MainWindow(QMainWindow):
         table_layout.setSpacing(8)
         
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
+        self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels([
             I18n.tr("col_status", self.current_lang),
             I18n.tr("col_path", self.current_lang),
             I18n.tr("col_removable_size", self.current_lang),
-            I18n.tr("col_local_size", self.current_lang),
-            I18n.tr("col_operation", self.current_lang)
+            I18n.tr("col_local_size", self.current_lang)
         ])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 100)
         self.table.setColumnWidth(2, 110)
         self.table.setColumnWidth(3, 110)
-        self.table.setColumnWidth(4, 130)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
+        self.table.setStyleSheet(self._get_table_style())
         table_layout.addWidget(self.table)
         
         layout.addWidget(self.table_group)
+    
+    def _get_table_style(self, fs=12, hd_fs=13):
+        """根据系统深色/浅色模式生成表格交替行 QSS（参考 pyside6-AltRowStyle.md）"""
+        dark = _is_dark_mode()
+        if dark:
+            return f"""
+QTableWidget {{
+    background-color: #252525;
+    alternate-background-color: #2d2d2d;
+    border: 1px solid #3a3a3a;
+    font-size: {fs}px;
+    color: #e0e0e0;
+    gridline-color: #3a3a3a;
+    selection-background-color: #3a6ba5;
+    selection-color: white;
+}}
+QTableWidget::item {{
+    color: #e0e0e0;
+    padding: 8px;
+    border: none;
+}}
+QTableWidget::item:selected {{
+    background-color: #3a6ba5;
+    color: white;
+}}
+QHeaderView::section {{
+    border: 1px solid #3a3a3a;
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    font-size: {hd_fs}px;
+    font-weight: bold;
+    padding: 10px;
+}}
+QHeaderView::section:last {{
+    border-right: none;
+}}
+"""
+        return f"""
+QTableWidget {{
+    background-color: #fafafa;
+    alternate-background-color: #f5f5f5;
+    border: 1px solid #d0d0d0;
+    font-size: {fs}px;
+    color: #2c3e50;
+    gridline-color: #e0e0e0;
+}}
+QTableWidget::item {{
+    color: #2c3e50;
+    padding: 8px;
+    border: none;
+}}
+QTableWidget::item:selected {{
+    background-color: #3a6ba5;
+    color: white;
+}}
+QHeaderView::section {{
+    border: 1px solid #c0c0c0;
+    background-color: #e8e8e8;
+    color: #2c3e50;
+    font-size: {hd_fs}px;
+    font-weight: bold;
+    padding: 10px;
+}}
+QHeaderView::section:last {{
+    border-right: none;
+}}
+"""
+    
+    def _status_bg_color(self, r, g, b, alpha=200):
+        """生成带透明度的状态背景色，使交替行颜色可透过显示"""
+        return QColor(r, g, b, alpha)
     
     def _load_saved_paths(self):
         config = load_config()
@@ -2644,6 +2709,10 @@ class MainWindow(QMainWindow):
             self.sync_type = "unidirectional"
         else:
             self.sync_type = "bidirectional"
+        # 切换同步类型时清除旧决策，刷新表格
+        self.conflict_decisions.clear()
+        self._delete_both_dirs.clear()
+        self._update_table()
         self._update_sync_type_button()
         self._update_buttons_visibility()
         # 更新头部箭头显示
@@ -2874,6 +2943,10 @@ class MainWindow(QMainWindow):
             self.sync_mode = "newest"
         else:
             self.sync_mode = "default"
+        # 模式切换时清除之前的冲突决策状态，刷新表格
+        self.conflict_decisions.clear()
+        self._delete_both_dirs.clear()
+        self._update_table()
         self._update_mode_button()
         # 保存同步模式设置到配置文件
         self._save_paths()
@@ -3051,9 +3124,9 @@ class MainWindow(QMainWindow):
             I18n.tr("col_status", lang),
             I18n.tr("col_path", lang),
             I18n.tr("col_removable_size", lang),
-            I18n.tr("col_local_size", lang),
-            I18n.tr("col_operation", lang)
+            I18n.tr("col_local_size", lang)
         ])
+        self.table.setStyleSheet(self._get_table_style())
         
         # 如果有差异结果，重新刷新表格
         if self.diff_results:
@@ -3279,20 +3352,20 @@ class MainWindow(QMainWindow):
                 if self.sync_direction == "removable_to_local":
                     # 介质 → 本地：源是介质，目标是本地
                     status_map = {
-                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(255, 245, 255)),  # 红色：目标独有，将被删除
-                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, self._status_bg_color(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.LOCAL_ONLY: (local_only_text, self._status_bg_color(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), self._status_bg_color(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
                 else:
                     # 本地 → 介质：源是本地，目标是介质
                     status_map = {
-                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(255, 245, 245)),  # 纅色：目标独有，准备删除
-                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.LOCAL_ONLY: (local_only_text, self._status_bg_color(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, self._status_bg_color(255, 245, 245)),  # 纅色：目标独有，准备删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), self._status_bg_color(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
             else:
                 # 差异同步模式
@@ -3302,38 +3375,30 @@ class MainWindow(QMainWindow):
                 if self.sync_direction == "removable_to_local":
                     # 介质 → 本地：源是介质，目标是本地
                     status_map = {
-                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(255, 245, 255)),  # 红色：目标独有，将被删除
-                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, self._status_bg_color(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.LOCAL_ONLY: (local_only_text, self._status_bg_color(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), self._status_bg_color(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
                 else:
                     # 本地 → 介质：源是本地，目标是介质
                     status_map = {
-                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(255, 245, 255)),  # 红色：目标独有，将被删除
-                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.LOCAL_ONLY: (local_only_text, self._status_bg_color(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, self._status_bg_color(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), self._status_bg_color(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), self._status_bg_color(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
         else:
             # 双向同步模式
             status_map = {
-                FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(227, 245, 255)),  # 绿色：仅一方存在
-                FileStatus.LOCAL_ONLY: (local_only_text, QColor(227, 245, 255)),  # 绿色：仅一方存在
-                FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
-                FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
-                FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
+                FileStatus.WINTOGO_ONLY: (removable_only_text, self._status_bg_color(227, 245, 255)),  # 绿色：仅一方存在
+                FileStatus.LOCAL_ONLY: (local_only_text, self._status_bg_color(227, 245, 255)),  # 绿色：仅一方存在
+                FileStatus.SAME: (I18n.tr("status_same", lang), self._status_bg_color(248, 249, 250)),
+                FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), self._status_bg_color(255, 243, 214)),  # 黄色：双方都存在的差异项目
+                FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), self._status_bg_color(255, 243, 214)),  # 黄色：双方都存在的差异项目
             }
-        
-        action_map = {
-            FileStatus.WINTOGO_ONLY: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
-            FileStatus.LOCAL_ONLY: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
-            FileStatus.SAME: lang == "zh" and "无操作" or "No action",
-            FileStatus.CONFLICT: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
-            FileStatus.MTIME_DIFF: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
-        }
         
         for diff in self.diff_results:
             if diff.status == FileStatus.SAME:
@@ -3379,45 +3444,6 @@ class MainWindow(QMainWindow):
             local_item.setBackground(color)
             local_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 3, local_item)
-            
-            action_text = action_map[diff.status]
-            if diff.relative_path in self.conflict_decisions:
-                decision = self.conflict_decisions[diff.relative_path]
-                if decision == "skip":
-                    action_text = lang == "zh" and "跳过" or "Skip"
-                elif diff.status == FileStatus.WINTOGO_ONLY:
-                    if decision == "to_local":
-                        action_text = lang == "zh" and f"复制到{local_prefix}" or f"Copy to {local_prefix}"
-                    elif decision == "delete_wintogo":
-                        action_text = lang == "zh" and "删除文件" or "Delete file"
-                elif diff.status == FileStatus.LOCAL_ONLY:
-                    if decision == "to_wintogo":
-                        action_text = lang == "zh" and f"复制到{removable_prefix}" or f"Copy to {removable_prefix}"
-                    elif decision == "delete_local":
-                        action_text = lang == "zh" and "删除文件" or "Delete file"
-                elif diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
-                    if diff.wintogo_info and diff.local_info:
-                        wintogo_newer = diff.wintogo_info.mtime > diff.local_info.mtime
-                        if decision == "wintogo_to_local":
-                            action_text = "保留最新" if wintogo_newer else "保留旧版"
-                        elif decision == "local_to_wintogo":
-                            action_text = "保留旧版" if wintogo_newer else "保留最新"
-                    else:
-                        action_text = "已选择"
-            
-            action_item = QTableWidgetItem(action_text)
-            action_item.setBackground(color)
-            action_item.setTextAlignment(Qt.AlignCenter)
-            if diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
-                action_item.setForeground(QColor("#e67700"))
-            elif diff.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY):
-                if diff.relative_path in self.conflict_decisions:
-                    action_item.setForeground(QColor("#2f9e44"))
-                else:
-                    action_item.setForeground(QColor("#e67700"))
-            else:
-                action_item.setForeground(QColor("#2f9e44"))
-            self.table.setItem(row, 4, action_item)
     
     def _format_size(self, size: int) -> str:
         for unit in ['B', 'KB', 'MB', 'GB']:
@@ -3738,6 +3764,10 @@ class MainWindow(QMainWindow):
         msg_box.exec()
         
         if msg_box.clickedButton() != confirm_btn:
+            # 取消同步：清除已选决策并刷新表格
+            self.conflict_decisions.clear()
+            self._delete_both_dirs.clear()
+            self._update_table()
             return
         
         wintogo_dir = self.wintogo_edit.text().strip()
@@ -3881,6 +3911,10 @@ class MainWindow(QMainWindow):
         msg_box.exec()
         
         if msg_box.clickedButton() != confirm_btn:
+            # 取消同步：清除已选决策并刷新表格
+            self.conflict_decisions.clear()
+            self._delete_both_dirs.clear()
+            self._update_table()
             return
         
         # 执行同步
@@ -3993,6 +4027,10 @@ class MainWindow(QMainWindow):
         msg_box.exec()
         
         if msg_box.clickedButton() != confirm_btn:
+            # 取消同步：清除已选决策并刷新表格
+            self.conflict_decisions.clear()
+            self._delete_both_dirs.clear()
+            self._update_table()
             return
         
         # 执行同步
