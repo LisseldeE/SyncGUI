@@ -1,5 +1,5 @@
 """
-SyncGUI - 本地与移动介质双向文件同步工具
+SyncGUI - 双端双向文件同步工具
 
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
@@ -9,16 +9,17 @@ License: MIT
 
 import sys
 import os
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtGui import QIcon, QFont
-from PyQt5.QtCore import Qt
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon, QFont
+from PySide6.QtCore import Qt
 from main_window import MainWindow, STYLESHEET
+from config import Config
 
 # Windows任务栏图标设置
 if sys.platform == 'win32':
     import ctypes
     # 设置应用程序ID，确保Windows任务栏正确显示图标
-    app_id = "Lisselde_E.SyncGUI.R10"
+    app_id = f"Lisselde_E.SyncGUI.{Config.APP_VERSION}"
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
 
 
@@ -43,19 +44,11 @@ def get_resource_path(relative_path):
 
 
 def main():
-    # 高DPI支持设置（必须在QApplication创建之前设置）
-    # 使用PassThrough策略，避免过度缩放
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    
+    # PySide6 默认启用高DPI支持
     # 设置高DPI缩放因子舍入策略，避免150%缩放时界面过大
-    try:
-        QApplication.setHighDpiScaleFactorRoundingPolicy(
-            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-        )
-    except AttributeError:
-        # PyQt5版本较低时不支持此方法
-        pass
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
@@ -63,7 +56,7 @@ def main():
     
     # 设置应用程序信息（确保Windows任务栏图标正确显示）
     app.setApplicationName("SyncGUI")
-    app.setApplicationVersion("R10")
+    app.setApplicationVersion(Config.APP_VERSION)
     app.setOrganizationName("Lisselde_E")
     
     # 设置应用程序字体，启用抗锯齿
@@ -102,7 +95,7 @@ def main():
         except Exception:
             pass
     
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

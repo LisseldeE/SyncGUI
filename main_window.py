@@ -13,7 +13,7 @@ import json
 import time
 from datetime import datetime
 from collections import defaultdict
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QTableWidget,
     QTableWidgetItem, QProgressBar, QMessageBox, QHeaderView,
@@ -21,14 +21,15 @@ from PyQt5.QtWidgets import (
     QFrame, QSizePolicy, QCheckBox, QListWidget, QListWidgetItem,
     QGraphicsOpacityEffect
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint, QPropertyAnimation, QByteArray
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPoint, QPropertyAnimation, QByteArray
+from PySide6.QtGui import QColor, QFont, QPalette
 
 from sync_core import (
     scan_directory, compare_files, compare_files_unidirectional, sync_file,
     rmtree_safe, _remove_empty_path_chain, FileStatus, DiffResult
 )
-from language import get_text, LANGUAGES
+from i18n import I18n
+from config import Config
 
 
 class AnimatedButton(QPushButton):
@@ -47,8 +48,8 @@ class AnimatedButton(QPushButton):
         
     def mousePressEvent(self, event):
         """鼠标按下事件 - 触发点击动画"""
-        if self.original_pos is None:
-            self.original_pos = self.pos()
+        # 每次点击前都更新位置，应对布局变化（如语言切换）
+        self.original_pos = self.pos()
         
         self.is_pressed = True
         # 向下移动1px，模拟按下效果
@@ -64,19 +65,54 @@ class AnimatedButton(QPushButton):
         super().mouseReleaseEvent(event)
 
 
-def get_app_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(sys.argv[0]))
+class ClickableLabel(QLabel):
+    """
+    可点击的标签类
+    - 鼠标悬停时显示手型光标
+    - 点击时发出clicked信号
+    """
+    clicked = Signal()
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+
+    def mousePressEvent(self, event):
+        """鼠标点击事件"""
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event):
+        """鼠标进入事件 - 显示手型光标"""
+        self.setCursor(Qt.PointingHandCursor)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """鼠标离开事件 - 恢复默认光标"""
+        self.setCursor(Qt.ArrowCursor)
+        super().leaveEvent(event)
 
 
-CONFIG_FILE = os.path.join(get_app_dir(), 'config.json')
+def get_config_dir():
+    """获取配置文件保存目录（AppData/SyncGUI）"""
+    # 获取用户AppData目录
+    app_data = os.environ.get('APPDATA', os.path.expanduser('~'))
+    config_dir = os.path.join(app_data, 'SyncGUI')
+    
+    # 确保目录存在
+    if not os.path.exists(config_dir):
+        try:
+            os.makedirs(config_dir)
+        except:
+            pass
+    
+    return config_dir
+
+
+CONFIG_FILE = os.path.join(get_config_dir(), 'config.json')
 
 
 STYLESHEET = """
-QMainWindow {
-    background-color: #f8f9fa;
-}
 QGroupBox {
     font-weight: bold;
     font-size: 13px;
@@ -85,19 +121,16 @@ QGroupBox {
     border-radius: 8px;
     margin-top: 12px;
     padding-top: 8px;
-    background-color: white;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 12px;
     padding: 0 8px;
-    color: #495057;
 }
 QLineEdit {
     padding: 10px 12px;
     border: 1px solid #ced4da;
     border-radius: 6px;
-    background-color: white;
     font-size: 13px;
     font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
 }
@@ -110,16 +143,10 @@ QPushButton {
     font-size: 13px;
     font-weight: 500;
     font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-    background-color: #e9ecef;
-    color: #495057;
     border: 1px solid #ced4da;
 }
 QPushButton:hover {
-    background-color: #dee2e6;
-}
-QPushButton:disabled {
-    background-color: #adb5bd;
-    color: #868e96;
+    border: 1px solid #adb5bd;
 }
 QPushButton#scanBtn {
     background-color: #339af0;
@@ -132,6 +159,19 @@ QPushButton#scanBtn:hover {
 QPushButton#scanBtn:disabled {
     background-color: #adb5bd;
 }
+QPushButton#aboutBtn {
+    color: #339af0;
+    border: 1px solid #ced4da;
+    border-radius: 16px;
+    font-size: 16px;
+    font-weight: bold;
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    padding: 0;
+}
+QPushButton#aboutBtn:hover {
+    color: #228be6;
+    border: 1px solid #adb5bd;
+}
 QPushButton#syncBtn {
     background-color: #51cf66;
     color: white;
@@ -143,67 +183,29 @@ QPushButton#syncBtn:hover {
 QPushButton#syncBtn:disabled {
     background-color: #adb5bd;
 }
-QPushButton#browseBtn {
-    background-color: #e9ecef;
-    color: #495057;
-    border: 1px solid #ced4da;
-}
-QPushButton#browseBtn:hover {
-    background-color: #dee2e6;
-}
-QComboBox {
-    background-color: #e9ecef;
-    color: #495057;
-    border: 1px solid #ced4da;
-    border-radius: 6px;
-    padding: 8px;
-    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-}
-QComboBox:hover {
-    background-color: #dee2e6;
-    border: 1px solid #adb5bd;
-}
-QComboBox::drop-down {
-    border: none;
-    width: 30px;
-}
-QComboBox::down-arrow {
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 5px solid #495057;
-    margin-right: 10px;
-}
-QComboBox QAbstractItemView {
-    background-color: white;
-    border: 1px solid #ced4da;
-    selection-background-color: #339af0;
-    selection-color: white;
-    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-}
 QTableWidget {
     border: 1px solid #dee2e6;
-    border-radius: 8px;
-    background-color: white;
-    gridline-color: #e9ecef;
     font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    alternate-background-color: rgba(0, 0, 0, 0.05);
 }
 QTableWidget::item {
     padding: 8px;
+    border: none;
 }
 QHeaderView::section {
-    background-color: #f1f3f5;
     padding: 10px;
     border: none;
     border-bottom: 1px solid #dee2e6;
+    border-right: 1px solid #dee2e6;
     font-weight: 600;
-    color: #495057;
     font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+}
+QHeaderView::section:last {
+    border-right: none;
 }
 QProgressBar {
     border: none;
     border-radius: 6px;
-    background-color: #e9ecef;
     text-align: center;
     font-weight: 500;
 }
@@ -211,11 +213,7 @@ QProgressBar::chunk {
     background-color: #339af0;
     border-radius: 6px;
 }
-QMessageBox {
-    background-color: white;
-}
 QMessageBox QLabel {
-    color: #495057;
     font-size: 13px;
 }
 QMessageBox QPushButton {
@@ -272,6 +270,11 @@ def load_config():
 
 def save_config(config):
     try:
+        # 确保配置目录存在
+        config_dir = get_config_dir()
+        if not os.path.exists(config_dir):
+            os.makedirs(config_dir)
+        
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except:
@@ -279,8 +282,8 @@ def save_config(config):
 
 
 class ScanWorker(QThread):
-    progress = pyqtSignal(int, int)
-    finished = pyqtSignal(dict, dict)
+    progress = Signal(int, int)
+    finished = Signal(dict, dict)
     
     def __init__(self, wintogo_dir: str, local_dir: str, ignore_rules: list = None):
         super().__init__()
@@ -298,8 +301,8 @@ class ScanWorker(QThread):
 
 
 class CompareWorker(QThread):
-    progress = pyqtSignal(int, int)
-    finished = pyqtSignal(list)
+    progress = Signal(int, int)
+    finished = Signal(list)
     
     def __init__(self, wintogo_files: dict, local_files: dict, 
                  wintogo_dir: str, local_dir: str,
@@ -356,8 +359,8 @@ class CompareWorker(QThread):
 
 
 class SyncWorker(QThread):
-    progress = pyqtSignal(object, object, object, object, str)
-    finished = pyqtSignal(int, int, int)
+    progress = Signal(object, object, object, object, str)
+    finished = Signal(int, int, int)
     
     def __init__(self, diff_results: list, conflict_decisions: dict,
                  wintogo_dir: str, local_dir: str):
@@ -461,7 +464,7 @@ class ConflictDialog(QDialog):
     def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("dialog_conflict", lang))
+        self.setWindowTitle(I18n.tr("dialog_conflict", lang))
         self.result_direction = None
         self.apply_to_dir = False
         self.cancel_sync = False
@@ -473,12 +476,6 @@ class ConflictDialog(QDialog):
     
     def _init_ui(self, diff: DiffResult):
         self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
-            QLabel {
-                color: #495057;
-            }
             QRadioButton {
                 padding: 10px;
                 font-size: 13px;
@@ -507,7 +504,7 @@ class ConflictDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
         
-        title_label = QLabel(get_text("conflict_title", self.lang))
+        title_label = QLabel(I18n.tr("conflict_title", self.lang))
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #e03131;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
@@ -517,13 +514,10 @@ class ConflictDialog(QDialog):
         line.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line)
         
-        file_label = QLabel(get_text("file_label", self.lang, path=diff.relative_path))
+        file_label = QLabel(I18n.tr("file_label", self.lang, path=diff.relative_path))
         file_label.setStyleSheet("""
             font-size: 13px; 
-            padding: 12px; 
-            background-color: #f8f9fa; 
-            border-radius: 6px;
-            border: 1px solid #e9ecef;
+            padding: 12px;
         """)
         file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(file_label)
@@ -545,7 +539,7 @@ class ConflictDialog(QDialog):
         """)
         wintogo_layout = QVBoxLayout(wintogo_box)
         wintogo_layout.setSpacing(6)
-        wintogo_title = QLabel(get_text("removable_time", self.lang))
+        wintogo_title = QLabel(I18n.tr("removable_time", self.lang))
         wintogo_title.setStyleSheet("font-weight: bold; color: #1971c2; font-size: 14px;")
         wintogo_title.setAlignment(Qt.AlignCenter)
         wintogo_time_label = QLabel(wintogo_time)
@@ -564,7 +558,7 @@ class ConflictDialog(QDialog):
         """)
         local_layout = QVBoxLayout(local_box)
         local_layout.setSpacing(6)
-        local_title = QLabel(get_text("local_time", self.lang))
+        local_title = QLabel(I18n.tr("local_time", self.lang))
         local_title.setStyleSheet("font-weight: bold; color: #2f9e44; font-size: 14px;")
         local_title.setAlignment(Qt.AlignCenter)
         local_time_label = QLabel(local_time)
@@ -577,8 +571,8 @@ class ConflictDialog(QDialog):
         time_layout.addWidget(local_box)
         layout.addWidget(time_widget)
         
-        newer = get_text("removable_time", self.lang) if self.wintogo_newer else get_text("local_time", self.lang)
-        hint_label = QLabel(get_text("newer_hint", self.lang, side=newer))
+        newer = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
+        hint_label = QLabel(I18n.tr("newer_hint", self.lang, side=newer))
         hint_label.setStyleSheet("color: #fd7e14; font-size: 13px;")
         hint_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(hint_label)
@@ -588,7 +582,7 @@ class ConflictDialog(QDialog):
         line2.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line2)
         
-        choice_label = QLabel(get_text("choice_label", self.lang))
+        choice_label = QLabel(I18n.tr("choice_label", self.lang))
         choice_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(choice_label)
         
@@ -597,12 +591,12 @@ class ConflictDialog(QDialog):
         self.rb_newer = QRadioButton()
         self.rb_older = QRadioButton()
         self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
-        self.rb_skip = QRadioButton(get_text("skip_file", self.lang))
+        self.rb_skip = QRadioButton(I18n.tr("skip_file", self.lang))
 
-        newer_side = get_text("removable_time", self.lang) if self.wintogo_newer else get_text("local_time", self.lang)
-        older_side = get_text("local_time", self.lang) if self.wintogo_newer else get_text("removable_time", self.lang)
-        self.rb_newer.setText(get_text("keep_newest", self.lang, side=newer_side))
-        self.rb_older.setText(get_text("keep_older", self.lang, side=older_side))
+        newer_side = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
+        older_side = I18n.tr("local_time", self.lang) if self.wintogo_newer else I18n.tr("removable_time", self.lang)
+        self.rb_newer.setText(I18n.tr("keep_newest", self.lang, side=newer_side))
+        self.rb_older.setText(I18n.tr("keep_older", self.lang, side=older_side))
 
         self.rb_newer.setChecked(True)
 
@@ -617,7 +611,7 @@ class ConflictDialog(QDialog):
         layout.addWidget(self.rb_skip)
         
         if self.same_dir_count > 0:
-            self.apply_dir_check = QCheckBox(get_text("apply_dir_files", self.lang, count=self.same_dir_count))
+            self.apply_dir_check = QCheckBox(I18n.tr("apply_dir_files", self.lang, count=self.same_dir_count))
             self.apply_dir_check.setStyleSheet("color: #1971c2; font-weight: 500;")
             self.apply_dir_check.setChecked(True)
             layout.addWidget(self.apply_dir_check)
@@ -627,7 +621,7 @@ class ConflictDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton(get_text("btn_confirm", self.lang))
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
         confirm_btn.setMinimumSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
@@ -647,24 +641,22 @@ class ConflictDialog(QDialog):
         """)
         confirm_btn.clicked.connect(self.accept)
         
-        cancel_btn = QPushButton(get_text("btn_cancel", self.lang))
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
         cancel_btn.setMinimumSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
         
-        cancel_sync_btn = QPushButton(get_text("btn_cancel_sync", self.lang))
+        cancel_sync_btn = QPushButton(I18n.tr("btn_cancel_sync", self.lang))
         cancel_sync_btn.setMinimumSize(120, 38)
         cancel_sync_btn.setStyleSheet("""
             QPushButton {
@@ -721,10 +713,12 @@ class ConflictDialog(QDialog):
 
 
 class OnlyOneSideDialog(QDialog):
-    def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", parent=None):
+    def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", removable_name: str = "移动介质目录", local_name: str = "本地目录", parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("dialog_diff", lang))
+        self.removable_name = removable_name
+        self.local_name = local_name
+        self.setWindowTitle(I18n.tr("dialog_diff", lang))
         self.diff = diff
         self.result_direction = None
         self.apply_to_dir = False
@@ -735,12 +729,6 @@ class OnlyOneSideDialog(QDialog):
     
     def _init_ui(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
-            QLabel {
-                color: #495057;
-            }
             QRadioButton {
                 padding: 10px;
                 font-size: 13px;
@@ -770,10 +758,10 @@ class OnlyOneSideDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         
         is_wintogo_only = self.diff.status == FileStatus.WINTOGO_ONLY
-        side_name = get_text("removable_time", self.lang) if is_wintogo_only else get_text("local_time", self.lang)
-        other_side = get_text("local_time", self.lang) if is_wintogo_only else get_text("removable_time", self.lang)
+        side_name = I18n.tr("removable_time", self.lang) if is_wintogo_only else I18n.tr("local_time", self.lang)
+        other_side = I18n.tr("local_time", self.lang) if is_wintogo_only else I18n.tr("removable_time", self.lang)
         
-        title_label = QLabel(get_text("diff_title", self.lang) + f" ({side_name})")
+        title_label = QLabel(I18n.tr("diff_title", self.lang) + f" ({side_name})")
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #1971c2;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
@@ -783,13 +771,10 @@ class OnlyOneSideDialog(QDialog):
         line.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line)
         
-        file_label = QLabel(get_text("file_label", self.lang, path=self.diff.relative_path))
+        file_label = QLabel(I18n.tr("file_label", self.lang, path=self.diff.relative_path))
         file_label.setStyleSheet("""
             font-size: 13px; 
-            padding: 12px; 
-            background-color: #f8f9fa; 
-            border-radius: 6px;
-            border: 1px solid #e9ecef;
+            padding: 12px;
         """)
         file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(file_label)
@@ -810,24 +795,37 @@ class OnlyOneSideDialog(QDialog):
         line2.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line2)
         
-        choice_label = QLabel(get_text("choice_label", self.lang))
+        choice_label = QLabel(I18n.tr("choice_label", self.lang))
         choice_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(choice_label)
         
         self.button_group = QButtonGroup(self)
 
         # 根据文件状态动态显示正确的同步方向
+        # 提取名称前缀
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+        
         if is_wintogo_only:
             # 介质存在，本地不存在：显示"介质 → 本地"
-            copy_text = self.lang == "zh" and "➡️ 介质 → 本地（补充本地缺失的文件）" or "➡️ Removable → Local"
+            copy_text = self.lang == "zh" and f"➡️ {removable_prefix} → {local_prefix}（补充{local_prefix}缺失的文件）" or f"➡️ {removable_prefix} → {local_prefix}"
         else:
             # 本地存在，介质不存在：显示"本地 → 介质"
-            copy_text = self.lang == "zh" and "➡️ 本地 → 介质（补充介质缺失的文件）" or "➡️ Local → Removable"
+            copy_text = self.lang == "zh" and f"➡️ {local_prefix} → {removable_prefix}（补充{removable_prefix}缺失的文件）" or f"➡️ {local_prefix} → {removable_prefix}"
 
         delete_text = self.lang == "zh" and f"🗑️ 删除此文件（移除{side_name}多余的文件）" or f"🗑️ Delete this file"
         self.rb_copy = QRadioButton(copy_text)
         self.rb_delete = QRadioButton(delete_text)
-        self.rb_skip = QRadioButton(get_text("skip_file", self.lang))
+        self.rb_skip = QRadioButton(I18n.tr("skip_file", self.lang))
 
         self.rb_copy.setChecked(True)
 
@@ -840,7 +838,7 @@ class OnlyOneSideDialog(QDialog):
         layout.addWidget(self.rb_skip)
         
         if self.same_dir_count > 0:
-            self.apply_dir_check = QCheckBox(get_text("apply_dir_files", self.lang, count=self.same_dir_count))
+            self.apply_dir_check = QCheckBox(I18n.tr("apply_dir_files", self.lang, count=self.same_dir_count))
             self.apply_dir_check.setStyleSheet("color: #1971c2; font-weight: 500;")
             self.apply_dir_check.setChecked(True)
             layout.addWidget(self.apply_dir_check)
@@ -850,7 +848,7 @@ class OnlyOneSideDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton(get_text("btn_confirm", self.lang))
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
         confirm_btn.setMinimumSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
@@ -870,24 +868,22 @@ class OnlyOneSideDialog(QDialog):
         """)
         confirm_btn.clicked.connect(self.accept)
         
-        cancel_btn = QPushButton(get_text("btn_cancel", self.lang))
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
         cancel_btn.setMinimumSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
         
-        cancel_sync_btn = QPushButton(get_text("btn_cancel_sync", self.lang))
+        cancel_sync_btn = QPushButton(I18n.tr("btn_cancel_sync", self.lang))
         cancel_sync_btn.setMinimumSize(120, 38)
         cancel_sync_btn.setStyleSheet("""
             QPushButton {
@@ -954,7 +950,7 @@ class MtimeDiffDialog(QDialog):
     def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("dialog_mtime", lang))
+        self.setWindowTitle(I18n.tr("dialog_mtime", lang))
         self.diff = diff
         self.result_direction = None
         self.apply_to_dir = False
@@ -965,12 +961,6 @@ class MtimeDiffDialog(QDialog):
     
     def _init_ui(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
-            QLabel {
-                color: #495057;
-            }
             QRadioButton {
                 padding: 10px;
                 font-size: 13px;
@@ -999,7 +989,7 @@ class MtimeDiffDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
         
-        title_label = QLabel(get_text("mtime_title", self.lang))
+        title_label = QLabel(I18n.tr("mtime_title", self.lang))
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fd7e14;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
@@ -1015,13 +1005,10 @@ class MtimeDiffDialog(QDialog):
         line.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line)
         
-        file_label = QLabel(get_text("file_label", self.lang, path=self.diff.relative_path))
+        file_label = QLabel(I18n.tr("file_label", self.lang, path=self.diff.relative_path))
         file_label.setStyleSheet("""
             font-size: 13px; 
-            padding: 12px; 
-            background-color: #f8f9fa; 
-            border-radius: 6px;
-            border: 1px solid #e9ecef;
+            padding: 12px;
         """)
         file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(file_label)
@@ -1043,7 +1030,7 @@ class MtimeDiffDialog(QDialog):
         """)
         wintogo_layout = QVBoxLayout(wintogo_box)
         wintogo_layout.setSpacing(6)
-        wintogo_title = QLabel(get_text("removable_time", self.lang))
+        wintogo_title = QLabel(I18n.tr("removable_time", self.lang))
         wintogo_title.setStyleSheet("font-weight: bold; color: #1971c2; font-size: 14px;")
         wintogo_title.setAlignment(Qt.AlignCenter)
         wintogo_time_label = QLabel(wintogo_time)
@@ -1062,7 +1049,7 @@ class MtimeDiffDialog(QDialog):
         """)
         local_layout = QVBoxLayout(local_box)
         local_layout.setSpacing(6)
-        local_title = QLabel(get_text("local_time", self.lang))
+        local_title = QLabel(I18n.tr("local_time", self.lang))
         local_title.setStyleSheet("font-weight: bold; color: #2f9e44; font-size: 14px;")
         local_title.setAlignment(Qt.AlignCenter)
         local_time_label = QLabel(local_time)
@@ -1076,8 +1063,8 @@ class MtimeDiffDialog(QDialog):
         layout.addWidget(time_widget)
         
         self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
-        newer = get_text("removable_time", self.lang) if self.wintogo_newer else get_text("local_time", self.lang)
-        hint_label2 = QLabel(get_text("newer_hint", self.lang, side=newer))
+        newer = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
+        hint_label2 = QLabel(I18n.tr("newer_hint", self.lang, side=newer))
         hint_label2.setStyleSheet("color: #fd7e14; font-size: 13px;")
         hint_label2.setAlignment(Qt.AlignCenter)
         layout.addWidget(hint_label2)
@@ -1087,7 +1074,7 @@ class MtimeDiffDialog(QDialog):
         line2.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line2)
         
-        choice_label = QLabel(get_text("choice_label", self.lang))
+        choice_label = QLabel(I18n.tr("choice_label", self.lang))
         choice_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(choice_label)
         
@@ -1098,8 +1085,8 @@ class MtimeDiffDialog(QDialog):
         self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
         self.rb_skip = QRadioButton(self.lang == "zh" and "⏭️ 跳过（保持现状）" or "⏭️ Skip (keep current)")
 
-        newer_side = get_text("removable_time", self.lang) if self.wintogo_newer else get_text("local_time", self.lang)
-        older_side = get_text("local_time", self.lang) if self.wintogo_newer else get_text("removable_time", self.lang)
+        newer_side = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
+        older_side = I18n.tr("local_time", self.lang) if self.wintogo_newer else I18n.tr("removable_time", self.lang)
         newer_text = self.lang == "zh" and f"✨ 用{newer_side}（较新）覆盖{older_side}" or f"✨ Use {newer_side} (newer) to overwrite"
         older_text = self.lang == "zh" and f"📥 用{older_side}（较旧）覆盖{newer_side}" or f"📥 Use {older_side} (older) to overwrite"
         self.rb_newer.setText(newer_text)
@@ -1118,7 +1105,7 @@ class MtimeDiffDialog(QDialog):
         layout.addWidget(self.rb_skip)
         
         if self.same_dir_count > 0:
-            self.apply_dir_check = QCheckBox(get_text("apply_dir_files", self.lang, count=self.same_dir_count))
+            self.apply_dir_check = QCheckBox(I18n.tr("apply_dir_files", self.lang, count=self.same_dir_count))
             self.apply_dir_check.setStyleSheet("color: #1971c2; font-weight: 500;")
             self.apply_dir_check.setChecked(True)
             layout.addWidget(self.apply_dir_check)
@@ -1128,7 +1115,7 @@ class MtimeDiffDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton(get_text("btn_confirm", self.lang))
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
         confirm_btn.setMinimumSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
@@ -1148,24 +1135,22 @@ class MtimeDiffDialog(QDialog):
         """)
         confirm_btn.clicked.connect(self.accept)
         
-        cancel_btn = QPushButton(get_text("btn_cancel", self.lang))
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
         cancel_btn.setMinimumSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
         
-        cancel_sync_btn = QPushButton(get_text("btn_cancel_sync", self.lang))
+        cancel_sync_btn = QPushButton(I18n.tr("btn_cancel_sync", self.lang))
         cancel_sync_btn.setMinimumSize(120, 38)
         cancel_sync_btn.setStyleSheet("""
             QPushButton {
@@ -1225,24 +1210,19 @@ class IgnoreRulesDialog(QDialog):
     def __init__(self, rules, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("dialog_ignore", lang))
+        self.setWindowTitle(I18n.tr("dialog_ignore", lang))
         self.setMinimumSize(500, 400)
         self.rules = rules.copy()
         self._init_ui()
     
     def _init_ui(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
             QLabel {
-                color: #495057;
             }
             QLineEdit {
                 padding: 10px;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
-                background-color: white;
                 font-size: 13px;
             }
             QLineEdit:focus {
@@ -1253,11 +1233,14 @@ class IgnoreRulesDialog(QDialog):
                 border-radius: 6px;
                 font-size: 13px;
                 font-weight: 500;
+                border: 1px solid #ced4da;
+            }
+            QPushButton:hover {
+                border: 1px solid #adb5bd;
             }
             QListWidget {
                 border: 1px solid #dee2e6;
                 border-radius: 6px;
-                background-color: white;
                 font-size: 13px;
             }
             QListWidget::item {
@@ -1278,7 +1261,7 @@ class IgnoreRulesDialog(QDialog):
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #495057;")
         layout.addWidget(title_label)
         
-        hint_label = QLabel(get_text("ignore_hint", self.lang))
+        hint_label = QLabel(I18n.tr("ignore_hint", self.lang))
         hint_label.setStyleSheet("color: #868e96; font-size: 12px;")
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
@@ -1291,11 +1274,11 @@ class IgnoreRulesDialog(QDialog):
         
         add_layout = QHBoxLayout()
         self.rule_input = QLineEdit()
-        self.rule_input.setPlaceholderText(get_text("ignore_add_placeholder", self.lang))
+        self.rule_input.setPlaceholderText(I18n.tr("ignore_add_placeholder", self.lang))
         self.rule_input.returnPressed.connect(self._add_rule)
         add_layout.addWidget(self.rule_input)
         
-        add_btn = QPushButton(get_text("btn_add", self.lang))
+        add_btn = QPushButton(I18n.tr("btn_add", self.lang))
         add_btn.setStyleSheet("""
             QPushButton {
                 background-color: #339af0;
@@ -1328,7 +1311,7 @@ class IgnoreRulesDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton(get_text("btn_confirm", self.lang))
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
         confirm_btn.setMinimumSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
@@ -1345,19 +1328,17 @@ class IgnoreRulesDialog(QDialog):
         """)
         confirm_btn.clicked.connect(self.accept)
         
-        cancel_btn = QPushButton(get_text("btn_cancel", self.lang))
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
         cancel_btn.setMinimumSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -1386,10 +1367,12 @@ class IgnoreRulesDialog(QDialog):
 
 
 class DirSyncDialog(QDialog):
-    def __init__(self, dir_path: str, diff_list: list, lang: str = "zh", parent=None):
+    def __init__(self, dir_path: str, diff_list: list, lang: str = "zh", removable_name: str = "移动介质目录", local_name: str = "本地目录", parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("dialog_dir_sync", lang))
+        self.removable_name = removable_name
+        self.local_name = local_name
+        self.setWindowTitle(I18n.tr("dialog_dir_sync", lang))
         self.dir_path = dir_path
         self.diff_list = diff_list
         self.result_direction = None
@@ -1399,12 +1382,6 @@ class DirSyncDialog(QDialog):
     
     def _init_ui(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
-            QLabel {
-                color: #495057;
-            }
             QRadioButton {
                 padding: 10px;
                 font-size: 13px;
@@ -1425,7 +1402,7 @@ class DirSyncDialog(QDialog):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
         
-        title_label = QLabel(get_text("dir_sync_title", self.lang))
+        title_label = QLabel(I18n.tr("dir_sync_title", self.lang))
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #1971c2;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
@@ -1434,10 +1411,7 @@ class DirSyncDialog(QDialog):
         dir_label = QLabel(path_text)
         dir_label.setStyleSheet("""
             font-size: 14px; 
-            padding: 10px; 
-            background-color: #f8f9fa; 
-            border-radius: 6px;
-            border: 1px solid #e9ecef;
+            padding: 10px;
         """)
         dir_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(dir_label)
@@ -1455,7 +1429,13 @@ class DirSyncDialog(QDialog):
             wintogo_box = QFrame()
             wintogo_box.setStyleSheet("QFrame { background-color: #e7f5ff; border-radius: 8px; padding: 10px; }")
             wintogo_layout = QVBoxLayout(wintogo_box)
-            wintogo_title = QLabel(self.lang == "zh" and "移动介质独有" or "Removable Only")
+            # 提取前缀（去掉"目录"尾缀）
+            removable_prefix = self.removable_name
+            if removable_prefix.endswith("目录"):
+                removable_prefix = removable_prefix[:-2]
+            elif removable_prefix.endswith("Directory"):
+                removable_prefix = removable_prefix[:-9]
+            wintogo_title = QLabel(self.lang == "zh" and f"{removable_prefix}独有" or f"{removable_prefix} Only")
             wintogo_title.setStyleSheet("font-weight: bold; color: #1971c2; font-size: 13px;")
             wintogo_title.setAlignment(Qt.AlignCenter)
             wintogo_count = QLabel(str(only_wintogo))
@@ -1469,7 +1449,13 @@ class DirSyncDialog(QDialog):
             local_box = QFrame()
             local_box.setStyleSheet("QFrame { background-color: #ebfbee; border-radius: 8px; padding: 10px; }")
             local_layout = QVBoxLayout(local_box)
-            local_title = QLabel(self.lang == "zh" and "本地独有" or "Local Only")
+            # 提取前缀（去掉"目录"尾缀）
+            local_prefix = self.local_name
+            if local_prefix.endswith("目录"):
+                local_prefix = local_prefix[:-2]
+            elif local_prefix.endswith("Directory"):
+                local_prefix = local_prefix[:-9]
+            local_title = QLabel(self.lang == "zh" and f"{local_prefix}独有" or f"{local_prefix} Only")
             local_title.setStyleSheet("font-weight: bold; color: #2f9e44; font-size: 13px;")
             local_title.setAlignment(Qt.AlignCenter)
             local_count = QLabel(str(only_local))
@@ -1514,7 +1500,7 @@ class DirSyncDialog(QDialog):
         total_label.setStyleSheet("color: #868e96; font-size: 13px;")
         total_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(total_label)
-        detail_btn = QPushButton(get_text("view_detail", self.lang))
+        detail_btn = QPushButton(I18n.tr("view_detail", self.lang))
         detail_btn.setStyleSheet("""
             QPushButton {
                 background-color: #f8f9fa;
@@ -1536,15 +1522,15 @@ class DirSyncDialog(QDialog):
         line.setStyleSheet("background-color: #e9ecef;")
         layout.addWidget(line)
         
-        choice_label = QLabel(get_text("dir_choice", self.lang))
+        choice_label = QLabel(I18n.tr("dir_choice", self.lang))
         choice_label.setStyleSheet("font-weight: bold; font-size: 15px;")
         layout.addWidget(choice_label)
         
         self.button_group = QButtonGroup(self)
         
-        self.rb_wintogo = QRadioButton(get_text("dir_to_local", self.lang))
-        self.rb_local = QRadioButton(get_text("dir_to_removable", self.lang))
-        self.rb_delete_both = QRadioButton(get_text("dir_delete_both", self.lang))
+        self.rb_wintogo = QRadioButton(I18n.tr("dir_to_local", self.lang))
+        self.rb_local = QRadioButton(I18n.tr("dir_to_removable", self.lang))
+        self.rb_delete_both = QRadioButton(I18n.tr("dir_delete_both", self.lang))
         self.rb_skip = QRadioButton(self.lang == "zh" and "⏭️ 跳过此目录" or "⏭️ Skip this directory")
         
         self.rb_wintogo.setChecked(True)
@@ -1564,7 +1550,7 @@ class DirSyncDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton(get_text("btn_confirm", self.lang))
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
         confirm_btn.setMinimumSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
@@ -1581,24 +1567,22 @@ class DirSyncDialog(QDialog):
         """)
         confirm_btn.clicked.connect(self.accept)
         
-        cancel_btn = QPushButton(get_text("btn_cancel", self.lang))
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
         cancel_btn.setMinimumSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
         
-        cancel_sync_btn = QPushButton(get_text("btn_cancel_sync", self.lang))
+        cancel_sync_btn = QPushButton(I18n.tr("btn_cancel_sync", self.lang))
         cancel_sync_btn.setMinimumSize(120, 38)
         cancel_sync_btn.setStyleSheet("""
             QPushButton {
@@ -1646,14 +1630,6 @@ class DirSyncDialog(QDialog):
         detail_dialog = QDialog(self)
         detail_dialog.setWindowTitle("差异文件详情")
         detail_dialog.setMinimumSize(600, 400)
-        detail_dialog.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
-            QLabel {
-                color: #495057;
-            }
-        """)
         
         layout = QVBoxLayout(detail_dialog)
         layout.setSpacing(12)
@@ -1684,11 +1660,24 @@ class DirSyncDialog(QDialog):
             status_text = ""
             status_color = ""
             
+            # 提取前缀（去掉"目录"尾缀）
+            removable_prefix = self.removable_name
+            if removable_prefix.endswith("目录"):
+                removable_prefix = removable_prefix[:-2]
+            elif removable_prefix.endswith("Directory"):
+                removable_prefix = removable_prefix[:-9]
+            
+            local_prefix = self.local_name
+            if local_prefix.endswith("目录"):
+                local_prefix = local_prefix[:-2]
+            elif local_prefix.endswith("Directory"):
+                local_prefix = local_prefix[:-9]
+            
             if diff.status == FileStatus.WINTOGO_ONLY:
-                status_text = "[WinToGo独有]"
+                status_text = f"[{removable_prefix}独有]"
                 status_color = "#1971c2"
             elif diff.status == FileStatus.LOCAL_ONLY:
-                status_text = "[本地独有]"
+                status_text = f"[{local_prefix}独有]"
                 status_color = "#2f9e44"
             elif diff.status == FileStatus.CONFLICT:
                 status_text = "[冲突]"
@@ -1712,14 +1701,12 @@ class DirSyncDialog(QDialog):
         close_btn.setFixedSize(100, 36)
         close_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         close_btn.clicked.connect(detail_dialog.accept)
@@ -1730,31 +1717,26 @@ class DirSyncDialog(QDialog):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
-        detail_dialog.exec_()
+        detail_dialog.exec()
 
 
 class SyncRulesDialog(QDialog):
     def __init__(self, rules, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("dialog_sync_rule", lang))
+        self.setWindowTitle(I18n.tr("dialog_sync_rule", lang))
         self.setMinimumSize(500, 400)
         self.rules = rules.copy()
         self._init_ui()
     
     def _init_ui(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-            }
             QLabel {
-                color: #495057;
             }
             QLineEdit {
                 padding: 10px;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
-                background-color: white;
                 font-size: 13px;
             }
             QLineEdit:focus {
@@ -1765,11 +1747,14 @@ class SyncRulesDialog(QDialog):
                 border-radius: 6px;
                 font-size: 13px;
                 font-weight: 500;
+                border: 1px solid #ced4da;
+            }
+            QPushButton:hover {
+                border: 1px solid #adb5bd;
             }
             QListWidget {
                 border: 1px solid #dee2e6;
                 border-radius: 6px;
-                background-color: white;
                 font-size: 13px;
             }
             QListWidget::item {
@@ -1790,7 +1775,7 @@ class SyncRulesDialog(QDialog):
         title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #495057;")
         layout.addWidget(title_label)
         
-        hint_label = QLabel(get_text("sync_rule_hint", self.lang))
+        hint_label = QLabel(I18n.tr("sync_rule_hint", self.lang))
         hint_label.setStyleSheet("color: #868e96; font-size: 12px;")
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
@@ -1803,11 +1788,11 @@ class SyncRulesDialog(QDialog):
         
         add_layout = QHBoxLayout()
         self.rule_input = QLineEdit()
-        self.rule_input.setPlaceholderText(get_text("sync_rule_add_placeholder", self.lang))
+        self.rule_input.setPlaceholderText(I18n.tr("sync_rule_add_placeholder", self.lang))
         self.rule_input.returnPressed.connect(self._add_rule)
         add_layout.addWidget(self.rule_input)
         
-        add_btn = QPushButton(get_text("btn_add", self.lang))
+        add_btn = QPushButton(I18n.tr("btn_add", self.lang))
         add_btn.setStyleSheet("""
             QPushButton {
                 background-color: #339af0;
@@ -1840,7 +1825,7 @@ class SyncRulesDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        confirm_btn = QPushButton(get_text("btn_confirm", self.lang))
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
         confirm_btn.setMinimumSize(100, 38)
         confirm_btn.setStyleSheet("""
             QPushButton {
@@ -1857,19 +1842,17 @@ class SyncRulesDialog(QDialog):
         """)
         confirm_btn.clicked.connect(self.accept)
         
-        cancel_btn = QPushButton(get_text("btn_cancel", self.lang))
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
         cancel_btn.setMinimumSize(100, 38)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
                 font-size: 14px;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -1897,16 +1880,163 @@ class SyncRulesDialog(QDialog):
         return self.rules
 
 
+class RenameDialog(QDialog):
+    """修改目录名称对话框"""
+    def __init__(self, old_name: str, lang: str = "zh", parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self.old_name = old_name
+        self.new_name = old_name
+        # 提取前缀和尾缀（保留"目录"/"Directory"尾缀）
+        self.suffix = ""
+        self.prefix = old_name
+        if old_name.endswith("目录"):
+            self.suffix = "目录"
+            self.prefix = old_name[:-2]
+        elif old_name.endswith("Directory"):
+            self.suffix = " Directory"
+            self.prefix = old_name[:-9]
+        self.setWindowTitle(I18n.tr("rename_dialog_title", lang))
+        self.setModal(True)
+        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint)
+        self.setFixedSize(400, 200)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        # 输入框（上方）- 只显示前缀部分
+        self.name_input = QLineEdit()
+        self.name_input.setText(self.prefix)
+        self.name_input.setStyleSheet("""
+            QLineEdit {
+                padding: 10px;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #339af0;
+            }
+        """)
+        layout.addWidget(self.name_input)
+
+        # 名称展示行（下方：原名称 → 新名称）
+        name_row_layout = QHBoxLayout()
+        name_row_layout.setSpacing(8)
+
+        # 原名称标签
+        old_label = QLabel(I18n.tr("rename_old_name", self.lang) + ":")
+        old_label.setStyleSheet("color: #868e96; font-size: 12px;")
+        name_row_layout.addWidget(old_label)
+
+        old_name_text = QLabel(self.prefix)
+        old_name_text.setStyleSheet("color: #495057; font-size: 12px; font-weight: bold;")
+        name_row_layout.addWidget(old_name_text)
+
+        # 箭头
+        arrow_label = QLabel("→")
+        arrow_label.setStyleSheet("color: #339af0; font-size: 14px; font-weight: bold;")
+        name_row_layout.addWidget(arrow_label)
+
+        # 新名称标签
+        new_label = QLabel(I18n.tr("rename_new_name", self.lang) + ":")
+        new_label.setStyleSheet("color: #868e96; font-size: 12px;")
+        name_row_layout.addWidget(new_label)
+
+        self.new_name_preview = QLabel(self.prefix)
+        self.new_name_preview.setStyleSheet("color: #2f9e44; font-size: 12px; font-weight: bold;")
+        name_row_layout.addWidget(self.new_name_preview)
+
+        name_row_layout.addStretch()
+        layout.addLayout(name_row_layout)
+
+        # 输入框变化时更新预览
+        self.name_input.textChanged.connect(self._update_preview)
+
+        # 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
+        confirm_btn.setMinimumSize(100, 36)
+        confirm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #40c057;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #37b24d;
+            }
+        """)
+        confirm_btn.clicked.connect(self._on_confirm)
+        btn_layout.addWidget(confirm_btn)
+
+        cancel_btn = QPushButton(I18n.tr("btn_cancel", self.lang))
+        cancel_btn.setMinimumSize(100, 36)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                border: 1px solid #adb5bd;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+    def _update_preview(self):
+        """更新新名称预览"""
+        text = self.name_input.text().strip()
+        if not text:
+            text = self.prefix
+        # 只显示前缀部分
+        self.new_name_preview.setText(text)
+
+    def _on_confirm(self):
+        """确认修改"""
+        text = self.name_input.text().strip()
+        if text:
+            # 返回完整名称（前缀+尾缀）
+            self.new_name = text + self.suffix
+            self.accept()
+        else:
+            QMessageBox.warning(self,
+                self.lang == "zh" and "警告" or "Warning",
+                self.lang == "zh" and "名称不能为空" or "Name cannot be empty")
+
+    def get_new_name(self):
+        # 返回前缀部分（不含尾缀）
+        text = self.name_input.text().strip()
+        if not text:
+            text = self.prefix
+        return text
+
+
 class AboutDialog(QDialog):
     """关于弹窗"""
     def __init__(self, lang='zh', parent=None):
         super().__init__(parent)
         self.lang = lang
-        self.setWindowTitle(get_text("about_title", lang))
+        self.setWindowTitle(I18n.tr("about_title", lang))
         self.setModal(True)
-        # 移除右上角的问号按钮
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setFixedSize(400, 320)  # 增加高度以容纳检查更新按钮
+        # 设置窗口标志：只保留关闭按钮
+        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint)
+        # 根据是否显示检查更新按钮调整窗口高度
+        height = 320 if Config.ENABLE_CHECK_UPDATE else 280
+        self.setFixedSize(400, height)
         self._init_ui()
     
     def _init_ui(self):
@@ -1915,7 +2045,7 @@ class AboutDialog(QDialog):
         layout.setContentsMargins(25, 25, 25, 25)
         
         # 标题
-        title_label = QLabel("SyncGUI")
+        title_label = QLabel(Config.APP_NAME)
         title_label.setStyleSheet("""
             QLabel {
                 font-size: 22px;
@@ -1927,14 +2057,14 @@ class AboutDialog(QDialog):
         layout.addWidget(title_label)
         
         # 版本信息
-        version_label = QLabel(get_text("about_version", self.lang))
-        version_label.setStyleSheet("font-size: 11px; color: #495057;")
+        version_label = QLabel(f"{I18n.tr('about_version_label', self.lang)}：{Config.APP_VERSION}")
+        version_label.setStyleSheet("font-size: 13px;")
         version_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(version_label)
         
         # 描述
-        desc_label = QLabel(get_text("about_description", self.lang))
-        desc_label.setStyleSheet("font-size: 10px; color: #868e96;")
+        desc_label = QLabel(I18n.tr("about_description", self.lang))
+        desc_label.setStyleSheet("font-size: 13px;")
         desc_label.setAlignment(Qt.AlignCenter)
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
@@ -1942,16 +2072,16 @@ class AboutDialog(QDialog):
         layout.addSpacing(8)
         
         # 作者信息
-        author_label = QLabel(get_text("about_author", self.lang))
-        author_label.setStyleSheet("font-size: 10px; color: #495057;")
+        author_label = QLabel(f"{I18n.tr('about_author_label', self.lang)}：{Config.APP_AUTHOR}")
+        author_label.setStyleSheet("font-size: 13px;")
         author_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(author_label)
         
         # GitHub（可点击打开浏览器）
-        github_label = QLabel(get_text("about_github", self.lang))
+        github_label = QLabel(f"GitHub: {Config.GITHUB_REPO}")
         github_label.setStyleSheet("""
             QLabel {
-                font-size: 10px;
+                font-size: 13px;
                 color: #339af0;
             }
             QLabel:hover {
@@ -1964,10 +2094,10 @@ class AboutDialog(QDialog):
         layout.addWidget(github_label)
         
         # 邮箱（可点击复制）
-        email_label = QLabel(get_text("about_email", self.lang))
+        email_label = QLabel(f"Email: {Config.APP_EMAIL}")
         email_label.setStyleSheet("""
             QLabel {
-                font-size: 10px;
+                font-size: 13px;
                 color: #495057;
             }
             QLabel:hover {
@@ -1981,35 +2111,46 @@ class AboutDialog(QDialog):
         
         layout.addStretch()
         
-        # 检查更新按钮和关闭按钮
+        # 按钮区域
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        # 检查更新按钮
-        check_update_btn = QPushButton(get_text("btn_check_update", self.lang))
-        check_update_btn.setMinimumWidth(120)
-        check_update_btn.setFixedHeight(36)
-        check_update_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #339af0;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 0 10px;
-            }
-            QPushButton:hover {
-                background-color: #228be6;
-            }
-        """)
-        check_update_btn.adjustSize()
-        check_update_btn.clicked.connect(self._check_update)
-        btn_layout.addWidget(check_update_btn)
-        
-        btn_layout.addSpacing(10)
+        # 检查更新按钮（仅 GitHub 版本显示）
+        if Config.ENABLE_CHECK_UPDATE:
+            check_update_btn = QPushButton(I18n.tr("btn_check_update", self.lang))
+            check_update_btn.setMinimumWidth(120)
+            check_update_btn.setFixedHeight(36)
+            check_update_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #339af0;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 0 10px;
+                }
+                QPushButton:hover {
+                    background-color: #228be6;
+                }
+            """)
+            check_update_btn.adjustSize()
+            check_update_btn.clicked.connect(self._check_update)
+            btn_layout.addWidget(check_update_btn)
+            
+            btn_layout.addSpacing(10)
         
         # 关闭按钮
-        close_btn = QPushButton(get_text("btn_close", self.lang))
+        close_btn = QPushButton(I18n.tr("btn_close", self.lang))
         close_btn.setFixedSize(100, 36)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                border: 1px solid #adb5bd;
+            }
+        """)
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
         
@@ -2020,68 +2161,78 @@ class AboutDialog(QDialog):
     
     def _open_github(self):
         """打开GitHub链接"""
-        from PyQt5.QtCore import QUrl
-        from PyQt5.QtGui import QDesktopServices
-        QDesktopServices.openUrl(QUrl("https://github.com/LisseldeE"))
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(f"https://github.com/{Config.GITHUB_REPO}"))
     
     def _copy_email(self):
         """复制邮箱到剪贴板"""
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         clipboard = QApplication.clipboard()
-        clipboard.setText("Lisselde.E@outlook.com")
+        clipboard.setText(Config.APP_EMAIL)
     
     def _check_update(self):
-        """检查更新"""
+        """检查更新（根据语言选择 API 源）"""
         import urllib.request
         import json
         import re
-        from PyQt5.QtCore import QUrl
-        from PyQt5.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
         
         try:
-            # 获取GitHub仓库的tags列表
-            url = "https://api.github.com/repos/LisseldeE/SyncGUI/tags"
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'SyncGUI')
+            # 根据语言选择 API 端点（中文用 Gitee，英文用 GitHub）
+            if self.lang == 'zh':
+                api_url = Config.GITEE_API
+                releases_url = Config.GITEE_RELEASES
+            else:
+                api_url = Config.GITHUB_API
+                releases_url = Config.GITHUB_RELEASES
+            
+            # 创建请求
+            req = urllib.request.Request(api_url)
+            req.add_header('User-Agent', Config.APP_NAME)
             
             with urllib.request.urlopen(req, timeout=10) as response:
                 data = json.loads(response.read().decode())
             
             if not data:
-                QMessageBox.information(self, get_text("update_title", self.lang), 
-                                       get_text("update_no_tags", self.lang))
+                QMessageBox.information(self, I18n.tr("update_title", self.lang), 
+                                       I18n.tr("update_no_tags", self.lang))
                 return
             
-            # 找到最新的tag（假设tags按时间倒序排列）
-            latest_tag = data[0]['name']
+            # 遍历所有 tags，找到版本号最大的那个
+            latest_tag = None
+            latest_version_num = -1
             
-            # 从当前版本信息中提取版本号（如"版本：SyncGUI_R10"）
-            current_version_text = get_text("about_version", self.lang)
-            current_version_match = re.search(r'R(\d+)', current_version_text)
+            for tag in data:
+                tag_name = tag.get('name', '')
+                version_match = re.search(r'R(\d+)', tag_name)
+                if version_match:
+                    version_num = int(version_match.group(1))
+                    if version_num > latest_version_num:
+                        latest_version_num = version_num
+                        latest_tag = tag_name
             
+            if latest_tag is None:
+                QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                                   I18n.tr("update_tag_error", self.lang))
+                return
+            
+            # 解析当前版本号
+            current_version_match = re.search(r'R(\d+)', Config.APP_VERSION)
             if not current_version_match:
-                QMessageBox.warning(self, get_text("update_title", self.lang),
-                                   get_text("update_version_error", self.lang))
+                QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                                   I18n.tr("update_version_error", self.lang))
                 return
             
             current_version = int(current_version_match.group(1))
             
-            # 从最新tag中提取版本号（如"R10"）
-            latest_version_match = re.search(r'R(\d+)', latest_tag)
-            
-            if not latest_version_match:
-                QMessageBox.warning(self, get_text("update_title", self.lang),
-                                   get_text("update_tag_error", self.lang))
-                return
-            
-            latest_version = int(latest_version_match.group(1))
-            
             # 比较版本号
-            if latest_version > current_version:
+            if latest_version_num > current_version:
                 # 发现新版本，弹窗询问是否前往下载
                 msg_box = QMessageBox(self)
-                msg_box.setWindowTitle(get_text("update_title", self.lang))
-                msg_box.setText(get_text("update_found", self.lang).format(latest_tag))
+                msg_box.setWindowTitle(I18n.tr("update_title", self.lang))
+                msg_box.setText(I18n.tr("update_found", self.lang).format(latest_tag))
                 msg_box.setIcon(QMessageBox.NoIcon)
                 
                 # 设置整体样式
@@ -2097,8 +2248,8 @@ class AboutDialog(QDialog):
                 """)
                 
                 # 自定义按钮
-                yes_btn = msg_box.addButton(get_text("btn_yes", self.lang), QMessageBox.YesRole)
-                no_btn = msg_box.addButton(get_text("btn_no", self.lang), QMessageBox.NoRole)
+                yes_btn = msg_box.addButton(I18n.tr("btn_yes", self.lang), QMessageBox.YesRole)
+                no_btn = msg_box.addButton(I18n.tr("btn_no", self.lang), QMessageBox.NoRole)
                 
                 # 设置按钮样式
                 yes_btn.setStyleSheet("""
@@ -2131,16 +2282,16 @@ class AboutDialog(QDialog):
                     }
                 """)
                 
-                msg_box.exec_()
+                msg_box.exec()
                 
                 if msg_box.clickedButton() == yes_btn:
-                    # 打开GitHub releases页面
-                    QDesktopServices.openUrl(QUrl("https://github.com/LisseldeE/SyncGUI/releases"))
+                    # 打开 releases 页面
+                    QDesktopServices.openUrl(QUrl(releases_url))
             else:
                 # 当前已是最新版本（移除图标）
                 msg_box = QMessageBox(self)
-                msg_box.setWindowTitle(get_text("update_title", self.lang))
-                msg_box.setText(get_text("update_latest", self.lang))
+                msg_box.setWindowTitle(I18n.tr("update_title", self.lang))
+                msg_box.setText(I18n.tr("update_latest", self.lang))
                 msg_box.setIcon(QMessageBox.NoIcon)
                 
                 # 设置整体样式
@@ -2155,16 +2306,16 @@ class AboutDialog(QDialog):
                     }
                 """)
                 
-                msg_box.exec_()
+                msg_box.exec()
         
         except urllib.error.URLError as e:
             # 网络错误
-            QMessageBox.warning(self, get_text("update_title", self.lang),
-                               get_text("update_network_error", self.lang).format(str(e)))
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                               I18n.tr("update_network_error", self.lang).format(str(e)))
         except Exception as e:
             # 其他错误
-            QMessageBox.warning(self, get_text("update_title", self.lang),
-                               get_text("update_error", self.lang).format(str(e)))
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                               I18n.tr("update_error", self.lang).format(str(e)))
 
 
 class MainWindow(QMainWindow):
@@ -2173,13 +2324,20 @@ class MainWindow(QMainWindow):
         # 先加载配置文件中的语言设置
         config = load_config()
         self.current_lang = config.get('language', 'zh')
-        self.sync_mode = config.get('sync_mode', 'default')  # "default" or "newest"
+        self.sync_mode = config.get('sync_mode', 'newest')  # "default" or "newest"
         self.sync_type = config.get('sync_type', 'bidirectional')  # "bidirectional" or "unidirectional"
         self.unidirectional_mode = config.get('unidirectional_mode', 'diff')  # "diff" or "overwrite"
         self.sync_direction = config.get('sync_direction', 'removable_to_local')  # "removable_to_local" or "local_to_removable"
         self.extra_items_mode = config.get('extra_items_mode', 'keep')  # "keep" or "delete"
         
-        self.setWindowTitle(get_text("app_title", self.current_lang))
+        # 加载名称并添加"目录"尾缀
+        removable_prefix = config.get('removable_name', '')
+        local_prefix = config.get('local_name', '')
+        suffix = self.current_lang == "zh" and "目录" or " Directory"
+        self.removable_name = removable_prefix + suffix if removable_prefix else "A" + suffix
+        self.local_name = local_prefix + suffix if local_prefix else "B" + suffix
+        
+        self.setWindowTitle(I18n.tr("app_title", self.current_lang))
         self.setMinimumSize(1000, 700)
         
         self.wintogo_files = {}
@@ -2211,28 +2369,26 @@ class MainWindow(QMainWindow):
         
         header_layout = QHBoxLayout()
         title_label = QLabel("📁 SyncGUI")
-        title_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #212529;")
+        title_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #339af0;")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         
-        self.version_label = QLabel(get_text("header_subtitle", self.current_lang))
-        self.version_label.setStyleSheet("color: #868e96; font-size: 13px;")
+        self.version_label = QLabel(self._get_subtitle_text())
+        self.version_label.setStyleSheet("font-size: 13px;")
         header_layout.addWidget(self.version_label)
         
         header_layout.addSpacing(16)
         
-        self.lang_btn = AnimatedButton(get_text("language_btn", self.current_lang))
-        self.lang_btn.setMinimumSize(70, 32)
+        self.lang_btn = AnimatedButton(I18n.tr("language_btn", self.current_lang))
+        self.lang_btn.setMinimumSize(80, 36)
         self.lang_btn.setStyleSheet("""
             QPushButton {
-                background-color: #e9ecef;
-                color: #495057;
                 border: 1px solid #ced4da;
                 border-radius: 6px;
-                font-size: 12px;
+                font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #dee2e6;
+                border: 1px solid #adb5bd;
             }
         """)
         self.lang_btn.clicked.connect(self._toggle_language)
@@ -2240,75 +2396,76 @@ class MainWindow(QMainWindow):
         
         # 关于按钮（小图标）
         self.about_btn = AnimatedButton("i")
+        self.about_btn.setObjectName("aboutBtn")
         self.about_btn.setFixedSize(32, 32)
-        self.about_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f8f9fa;
-                color: #6c757d;
-                border: 1px solid #dee2e6;
-                border-radius: 16px;
-                font-size: 16px;
-                font-weight: bold;
-                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            }
-            QPushButton:hover {
-                background-color: #e9ecef;
-                color: #495057;
-                border-color: #adb5bd;
-            }
-        """)
         self.about_btn.clicked.connect(self._show_about_dialog)
         header_layout.addWidget(self.about_btn)
         
         layout.addLayout(header_layout)
         
-        dir_group = QGroupBox("目录设置")
-        dir_layout = QVBoxLayout(dir_group)
-        dir_layout.setSpacing(12)
-        dir_layout.setContentsMargins(16, 20, 16, 16)
-        
+        self.dir_group = QGroupBox()
+        self.dir_group.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                margin-top: 0;
+                padding-top: 0;
+            }
+        """)
+        dir_layout = QVBoxLayout(self.dir_group)
+        dir_layout.setSpacing(8)
+        dir_layout.setContentsMargins(0, 0, 0, 0)
+
         label_width = 100
-        
+
+        # 移动介质目录行
         wintogo_layout = QHBoxLayout()
-        self.wintogo_label = QLabel(get_text("removable_label", self.current_lang))
+        self.wintogo_label = ClickableLabel(self.removable_name)
         self.wintogo_label.setFixedWidth(label_width)
-        self.wintogo_label.setStyleSheet("font-size: 13px; color: #495057;")
+        self.wintogo_label.setStyleSheet("font-size: 13px;")
+        self.wintogo_label.clicked.connect(self._rename_removable)
         wintogo_layout.addWidget(self.wintogo_label)
         self.wintogo_edit = QLineEdit()
-        self.wintogo_edit.setPlaceholderText(get_text("removable_placeholder", self.current_lang))
+        self.wintogo_edit.setPlaceholderText(I18n.tr("removable_placeholder", self.current_lang).format(name=self._get_clean_name(self.removable_name)))
         self.wintogo_edit.textChanged.connect(self._on_path_changed)
         wintogo_layout.addWidget(self.wintogo_edit)
-        self.wintogo_btn = AnimatedButton(get_text("browse", self.current_lang))
+        self.wintogo_btn = AnimatedButton(I18n.tr("browse", self.current_lang))
         self.wintogo_btn.setObjectName("browseBtn")
         self.wintogo_btn.setMinimumWidth(80)
         self.wintogo_btn.clicked.connect(self._select_wintogo)
         wintogo_layout.addWidget(self.wintogo_btn)
         dir_layout.addLayout(wintogo_layout)
-        
+
+        # 本地目录行
         local_layout = QHBoxLayout()
-        self.local_label = QLabel(get_text("local_label", self.current_lang))
+        self.local_label = ClickableLabel(self.local_name)
         self.local_label.setFixedWidth(label_width)
-        self.local_label.setStyleSheet("font-size: 13px; color: #495057;")
+        self.local_label.setStyleSheet("font-size: 13px;")
+        self.local_label.clicked.connect(self._rename_local)
         local_layout.addWidget(self.local_label)
         self.local_edit = QLineEdit()
-        self.local_edit.setPlaceholderText(get_text("local_placeholder", self.current_lang))
+        self.local_edit.setPlaceholderText(I18n.tr("local_placeholder", self.current_lang).format(name=self._get_clean_name(self.local_name)))
         self.local_edit.textChanged.connect(self._on_path_changed)
         local_layout.addWidget(self.local_edit)
-        self.local_btn = AnimatedButton(get_text("browse", self.current_lang))
+        self.local_btn = AnimatedButton(I18n.tr("browse", self.current_lang))
         self.local_btn.setObjectName("browseBtn")
         self.local_btn.setMinimumWidth(80)
         self.local_btn.clicked.connect(self._select_local)
         local_layout.addWidget(self.local_btn)
         dir_layout.addLayout(local_layout)
         
-        layout.addWidget(dir_group)
+        # 提示标签：点击可修改名称（单独一行显示）
+        self.rename_hint_label = QLabel(I18n.tr("click_to_rename", self.current_lang))
+        self.rename_hint_label.setStyleSheet("font-size: 11px; color: #868e96;")
+        dir_layout.addWidget(self.rename_hint_label)
+
+        layout.addWidget(self.dir_group)
         
         # 第一行按钮：同步模式、默认模式、忽略规则、同步规则
         btn_layout_row1 = QHBoxLayout()
         btn_layout_row1.setSpacing(12)
         
         # 同步模式切换按钮（双向/单向）
-        self.sync_type_btn = AnimatedButton(get_text("sync_type_bidirectional", self.current_lang))
+        self.sync_type_btn = AnimatedButton(I18n.tr("sync_type_bidirectional", self.current_lang))
         self.sync_type_btn.setObjectName("browseBtn")
         self.sync_type_btn.setMinimumHeight(44)
         self.sync_type_btn.setMinimumWidth(110)
@@ -2316,7 +2473,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.sync_type_btn)
         
         # 默认模式按钮（默认模式/最新优先）
-        self.mode_btn = AnimatedButton(get_text("mode_default", self.current_lang))
+        self.mode_btn = AnimatedButton(I18n.tr("mode_default", self.current_lang))
         self.mode_btn.setObjectName("browseBtn")
         self.mode_btn.setMinimumHeight(44)
         self.mode_btn.setMinimumWidth(110)
@@ -2324,7 +2481,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.mode_btn)
         
         # 单向模式子模式按钮（差异同步/覆盖同步）
-        self.unidirectional_mode_btn = AnimatedButton(get_text("unidirectional_mode_diff", self.current_lang))
+        self.unidirectional_mode_btn = AnimatedButton(I18n.tr("unidirectional_mode_diff", self.current_lang))
         self.unidirectional_mode_btn.setObjectName("browseBtn")
         self.unidirectional_mode_btn.setMinimumHeight(44)
         self.unidirectional_mode_btn.setMinimumWidth(110)
@@ -2332,8 +2489,9 @@ class MainWindow(QMainWindow):
         self.unidirectional_mode_btn.setVisible(False)  # 默认隐藏，只在单向模式下显示
         btn_layout_row1.addWidget(self.unidirectional_mode_btn)
         
-        # 方向切换按钮（介质→本地/本地→介质）
-        self.direction_btn = AnimatedButton(get_text("direction_removable_to_local", self.current_lang))
+        # 方向切换按钮（A→B/B→A）
+        direction_text = self._get_direction_text()
+        self.direction_btn = AnimatedButton(direction_text)
         self.direction_btn.setObjectName("browseBtn")
         self.direction_btn.setMinimumHeight(44)
         self.direction_btn.setMinimumWidth(150)
@@ -2342,7 +2500,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.direction_btn)
         
         # 多余项目处理按钮（保留多余项目/删除多余项目）
-        self.extra_items_btn = AnimatedButton(get_text("extra_items_keep", self.current_lang))
+        self.extra_items_btn = AnimatedButton(I18n.tr("extra_items_keep", self.current_lang))
         self.extra_items_btn.setObjectName("browseBtn")
         self.extra_items_btn.setMinimumHeight(44)
         self.extra_items_btn.setMinimumWidth(130)
@@ -2351,7 +2509,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.extra_items_btn)
         
         # 忽略规则按钮
-        self.ignore_btn = AnimatedButton(get_text("ignore_btn", self.current_lang))
+        self.ignore_btn = AnimatedButton(I18n.tr("ignore_btn", self.current_lang))
         self.ignore_btn.setObjectName("browseBtn")
         self.ignore_btn.setMinimumHeight(44)
         self.ignore_btn.setMinimumWidth(100)
@@ -2359,7 +2517,7 @@ class MainWindow(QMainWindow):
         btn_layout_row1.addWidget(self.ignore_btn)
         
         # 同步规则按钮
-        self.sync_rule_btn = AnimatedButton(get_text("sync_rule_btn", self.current_lang))
+        self.sync_rule_btn = AnimatedButton(I18n.tr("sync_rule_btn", self.current_lang))
         self.sync_rule_btn.setObjectName("browseBtn")
         self.sync_rule_btn.setMinimumHeight(44)
         self.sync_rule_btn.setMinimumWidth(100)
@@ -2373,14 +2531,14 @@ class MainWindow(QMainWindow):
         btn_layout_row2 = QHBoxLayout()
         btn_layout_row2.setSpacing(12)
         
-        self.scan_btn = AnimatedButton(get_text("scan_btn", self.current_lang))
+        self.scan_btn = AnimatedButton(I18n.tr("scan_btn", self.current_lang))
         self.scan_btn.setObjectName("scanBtn")
         self.scan_btn.setFixedHeight(44)
         self.scan_btn.setFixedWidth(140)
         self.scan_btn.clicked.connect(self._start_scan)
         btn_layout_row2.addWidget(self.scan_btn)
         
-        self.sync_btn = AnimatedButton(get_text("sync_btn", self.current_lang))
+        self.sync_btn = AnimatedButton(I18n.tr("sync_btn", self.current_lang))
         self.sync_btn.setObjectName("syncBtn")
         self.sync_btn.setFixedHeight(44)
         self.sync_btn.setFixedWidth(140)
@@ -2397,22 +2555,37 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedHeight(28)
         layout.addWidget(self.progress_bar)
         
-        self.status_label = QLabel(get_text("status_ready", self.current_lang))
-        self.status_label.setStyleSheet("color: #868e96; font-size: 13px; padding: 4px 0;")
+        self.status_label = QLabel(I18n.tr("status_ready", self.current_lang))
+        self.status_label.setStyleSheet("font-size: 13px; padding: 4px 0;")
         layout.addWidget(self.status_label)
         
-        table_group = QGroupBox("差异列表")
-        table_layout = QVBoxLayout(table_group)
-        table_layout.setContentsMargins(16, 20, 16, 16)
+        self.table_group = QGroupBox(I18n.tr("table_group_title", self.current_lang))
+        self.table_group.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                margin-top: 0;
+                padding-top: 0;
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 0;
+                padding: 0;
+            }
+        """)
+        table_layout = QVBoxLayout(self.table_group)
+        table_layout.setContentsMargins(0, 20, 0, 0)
+        table_layout.setSpacing(8)
         
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels([
-            get_text("col_status", self.current_lang),
-            get_text("col_path", self.current_lang),
-            get_text("col_removable_size", self.current_lang),
-            get_text("col_local_size", self.current_lang),
-            get_text("col_operation", self.current_lang)
+            I18n.tr("col_status", self.current_lang),
+            I18n.tr("col_path", self.current_lang),
+            I18n.tr("col_removable_size", self.current_lang),
+            I18n.tr("col_local_size", self.current_lang),
+            I18n.tr("col_operation", self.current_lang)
         ])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -2429,22 +2602,32 @@ class MainWindow(QMainWindow):
         self.table.setShowGrid(False)
         table_layout.addWidget(self.table)
         
-        layout.addWidget(table_group)
+        layout.addWidget(self.table_group)
     
     def _load_saved_paths(self):
         config = load_config()
-        wintogo_path = config.get('wintogo_dir', '')
-        local_path = config.get('local_dir', '')
+        wintogo_path = config.get('A_dir', '')
+        local_path = config.get('B_dir', '')
         ignore_rules = config.get('ignore_rules', [])
         sync_rules = config.get('sync_rules', [])
-        
+
+        # 加载目录名称并添加尾缀
+        removable_prefix = config.get('removable_name', '')
+        local_prefix = config.get('local_name', '')
+        suffix = self.current_lang == "zh" and "目录" or " Directory"
+        self.removable_name = removable_prefix + suffix if removable_prefix else "A" + suffix
+        self.local_name = local_prefix + suffix if local_prefix else "B" + suffix
+
         if wintogo_path:
             self.wintogo_edit.setText(wintogo_path)
         if local_path:
             self.local_edit.setText(local_path)
         self.ignore_rules = ignore_rules
         self.sync_rules = sync_rules
-        
+
+        # 更新目录标签显示
+        self._update_dir_labels()
+
         # 更新模式按钮显示
         self._update_mode_button()
     
@@ -2485,7 +2668,7 @@ class MainWindow(QMainWindow):
     def _update_sync_type_button(self):
         """更新同步类型按钮显示"""
         if self.sync_type == "unidirectional":
-            self.sync_type_btn.setText(get_text("sync_type_unidirectional", self.current_lang))
+            self.sync_type_btn.setText(I18n.tr("sync_type_unidirectional", self.current_lang))
             self.sync_type_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #339af0;
@@ -2498,7 +2681,7 @@ class MainWindow(QMainWindow):
                 }
             """)
         else:
-            self.sync_type_btn.setText(get_text("sync_type_bidirectional", self.current_lang))
+            self.sync_type_btn.setText(I18n.tr("sync_type_bidirectional", self.current_lang))
             self.sync_type_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #e9ecef;
@@ -2527,7 +2710,7 @@ class MainWindow(QMainWindow):
     def _update_unidirectional_mode_button(self):
         """更新单向同步子模式按钮显示"""
         if self.unidirectional_mode == "overwrite":
-            self.unidirectional_mode_btn.setText(get_text("unidirectional_mode_overwrite", self.current_lang))
+            self.unidirectional_mode_btn.setText(I18n.tr("unidirectional_mode_overwrite", self.current_lang))
             self.unidirectional_mode_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #fa5252;
@@ -2540,7 +2723,7 @@ class MainWindow(QMainWindow):
                 }
             """)
         else:
-            self.unidirectional_mode_btn.setText(get_text("unidirectional_mode_diff", self.current_lang))
+            self.unidirectional_mode_btn.setText(I18n.tr("unidirectional_mode_diff", self.current_lang))
             self.unidirectional_mode_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #e9ecef;
@@ -2569,7 +2752,7 @@ class MainWindow(QMainWindow):
     def _update_extra_items_button(self):
         """更新多余项目处理按钮显示"""
         if self.extra_items_mode == "delete":
-            self.extra_items_btn.setText(get_text("extra_items_delete", self.current_lang))
+            self.extra_items_btn.setText(I18n.tr("extra_items_delete", self.current_lang))
             self.extra_items_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #fa5252;
@@ -2582,7 +2765,7 @@ class MainWindow(QMainWindow):
                 }
             """)
         else:
-            self.extra_items_btn.setText(get_text("extra_items_keep", self.current_lang))
+            self.extra_items_btn.setText(I18n.tr("extra_items_keep", self.current_lang))
             self.extra_items_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #2f9e44;
@@ -2600,10 +2783,13 @@ class MainWindow(QMainWindow):
         """切换同步方向"""
         if self.sync_direction == "removable_to_local":
             self.sync_direction = "local_to_removable"
-            self.direction_btn.setText(get_text("direction_local_to_removable", self.current_lang))
         else:
             self.sync_direction = "removable_to_local"
-            self.direction_btn.setText(get_text("direction_removable_to_local", self.current_lang))
+        
+        # 更新按钮文本和尺寸
+        self.direction_btn.setText(self._get_direction_text())
+        self.direction_btn.adjustSize()
+        
         # 更新头部箭头显示
         self._update_header_status()
         # 保存同步方向设置到配置文件
@@ -2663,10 +2849,7 @@ class MainWindow(QMainWindow):
                 self._fade_widget(self.direction_btn, True)
                 self._fade_widget(self.extra_items_btn, True)
                 # 更新方向按钮文本
-                if self.sync_direction == "local_to_removable":
-                    self.direction_btn.setText(get_text("direction_local_to_removable", self.current_lang))
-                else:
-                    self.direction_btn.setText(get_text("direction_removable_to_local", self.current_lang))
+                self.direction_btn.setText(self._get_direction_text())
             
             # 先淡出隐藏双向模式按钮，完成后淡入显示单向模式按钮
             self._fade_widget(self.mode_btn, False, callback=fade_in_unidirectional_buttons)
@@ -2694,11 +2877,96 @@ class MainWindow(QMainWindow):
         self._update_mode_button()
         # 保存同步模式设置到配置文件
         self._save_paths()
+
+    def _rename_removable(self):
+        """修改移动介质目录名称"""
+        dialog = RenameDialog(self.removable_name, self.current_lang, self)
+        if dialog.exec() == QDialog.Accepted:
+            # 保存前缀，使用时添加"目录"尾缀
+            self.removable_name = dialog.get_new_name() + self._get_suffix()
+            self._update_dir_labels()
+            self._save_paths()
+
+    def _rename_local(self):
+        """修改本地目录名称"""
+        dialog = RenameDialog(self.local_name, self.current_lang, self)
+        if dialog.exec() == QDialog.Accepted:
+            # 保存前缀，使用时添加"目录"尾缀
+            self.local_name = dialog.get_new_name() + self._get_suffix()
+            self._update_dir_labels()
+            self._save_paths()
     
+    def _get_suffix(self):
+        """获取目录尾缀"""
+        return self.current_lang == "zh" and "目录" or " Directory"
+    
+    def _get_clean_name(self, name):
+        """去掉名称的目录尾缀，得到纯名称前缀"""
+        if name.endswith("目录"):
+            return name[:-2]
+        elif name.endswith("Directory"):
+            return name[:-9]
+        return name
+    
+    def _get_subtitle_text(self, status_key="header_subtitle"):
+        """获取带自定义名称的 subtitle 文本"""
+        # 提取名称前缀（去掉"目录"尾缀）
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+        
+        # 使用翻译模板并填充自定义名称
+        template = I18n.tr(status_key, self.current_lang)
+        return template.format(a=removable_prefix, b=local_prefix)
+    
+    def _get_direction_text(self):
+        """获取方向按钮文本"""
+        if self.sync_direction == "removable_to_local":
+            template = I18n.tr("direction_removable_to_local", self.current_lang)
+        else:
+            template = I18n.tr("direction_local_to_removable", self.current_lang)
+        
+        # 提取名称前缀（去掉"目录"尾缀）
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+        
+        return template.format(a=removable_prefix, b=local_prefix)
+    
+    def _update_dir_labels(self):
+        """更新目录标签显示"""
+        self.wintogo_label.setText(self.removable_name)
+        self.local_label.setText(self.local_name)
+        self.rename_hint_label.setText(I18n.tr("click_to_rename", self.current_lang))
+        # 更新右上角名称显示
+        self.version_label.setText(self._get_subtitle_text())
+        # 更新方向按钮显示
+        if self.sync_type == "unidirectional":
+            self.direction_btn.setText(self._get_direction_text())
+            self.direction_btn.adjustSize()
+        # 刷新差异列表以显示新名称
+        self._update_table()
+
     def _update_mode_button(self):
         """更新模式按钮显示（带淡入淡出动画）"""
         if self.sync_mode == "newest":
-            self.mode_btn.setText(get_text("mode_newest", self.current_lang))
+            self.mode_btn.setText(I18n.tr("mode_newest", self.current_lang))
             self.mode_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #339af0;
@@ -2713,7 +2981,7 @@ class MainWindow(QMainWindow):
             # 最新优先模式下隐藏同步规则按钮（不使用同步规则）
             self._fade_widget(self.sync_rule_btn, False)
         else:
-            self.mode_btn.setText(get_text("mode_default", self.current_lang))
+            self.mode_btn.setText(I18n.tr("mode_default", self.current_lang))
             self.mode_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #e9ecef;
@@ -2735,50 +3003,56 @@ class MainWindow(QMainWindow):
         lang = self.current_lang
 
         # 更新窗口标题
-        self.setWindowTitle(get_text("app_title", lang))
+        self.setWindowTitle(I18n.tr("app_title", lang))
 
         # 更新头部（根据同步类型和方向动态显示箭头）
         self._update_header_status()
 
-        self.lang_btn.setText(get_text("language_btn", lang))
-        self.lang_btn.adjustSize()
-        
-        # 更新目录设置
-        self.wintogo_label.setText(get_text("removable_label", lang))
-        self.wintogo_edit.setPlaceholderText(get_text("removable_placeholder", lang))
-        self.wintogo_btn.setText(get_text("browse", lang))
-        self.wintogo_btn.adjustSize()
-        self.local_label.setText(get_text("local_label", lang))
-        self.local_edit.setPlaceholderText(get_text("local_placeholder", lang))
-        self.local_btn.setText(get_text("browse", lang))
-        self.local_btn.adjustSize()
+        # 强制更新所有按钮文本和大小
+        self.lang_btn.setText(I18n.tr("language_btn", lang))
+        self.lang_btn.setMinimumWidth(80)
+        self.lang_btn.updateGeometry()
+
+        # 更新目录设置（使用自定义名称）
+        self._update_dir_labels()
+        self.wintogo_edit.setPlaceholderText(I18n.tr("removable_placeholder", lang).format(name=self._get_clean_name(self.removable_name)))
+        self.wintogo_btn.setText(I18n.tr("browse", lang))
+        self.wintogo_btn.setMinimumWidth(80)
+        self.wintogo_btn.updateGeometry()
+        self.local_edit.setPlaceholderText(I18n.tr("local_placeholder", lang).format(name=self._get_clean_name(self.local_name)))
+        self.local_btn.setText(I18n.tr("browse", lang))
+        self.local_btn.setMinimumWidth(80)
+        self.local_btn.updateGeometry()
         
         # 更新按钮
-        self.scan_btn.setText(get_text("scan_btn", lang))
-        self.sync_btn.setText(get_text("sync_btn", lang))
-        self.ignore_btn.setText(get_text("ignore_btn", lang))
-        self.ignore_btn.adjustSize()
-        self.sync_rule_btn.setText(get_text("sync_rule_btn", lang))
-        self.sync_rule_btn.adjustSize()
+        self.scan_btn.setText(I18n.tr("scan_btn", lang))
+        self.sync_btn.setText(I18n.tr("sync_btn", lang))
+        self.ignore_btn.setText(I18n.tr("ignore_btn", lang))
+        self.ignore_btn.setMinimumWidth(100)
+        self.ignore_btn.updateGeometry()
+        self.sync_rule_btn.setText(I18n.tr("sync_rule_btn", lang))
+        self.sync_rule_btn.setMinimumWidth(100)
+        self.sync_rule_btn.updateGeometry()
         self._update_sync_type_button()
         self._update_unidirectional_mode_button()
         # 更新方向切换按钮文本
-        if self.sync_direction == "local_to_removable":
-            self.direction_btn.setText(get_text("direction_local_to_removable", lang))
-        else:
-            self.direction_btn.setText(get_text("direction_removable_to_local", lang))
+        self.direction_btn.setText(self._get_direction_text())
+        self.direction_btn.updateGeometry()
         self._update_mode_button()
         
         # 更新状态
-        self.status_label.setText(get_text("status_ready", lang))
+        self.status_label.setText(I18n.tr("status_ready", lang))
+        
+        # 更新差异列表标题
+        self.table_group.setTitle(I18n.tr("table_group_title", lang))
         
         # 更新表格
         self.table.setHorizontalHeaderLabels([
-            get_text("col_status", lang),
-            get_text("col_path", lang),
-            get_text("col_removable_size", lang),
-            get_text("col_local_size", lang),
-            get_text("col_operation", lang)
+            I18n.tr("col_status", lang),
+            I18n.tr("col_path", lang),
+            I18n.tr("col_removable_size", lang),
+            I18n.tr("col_local_size", lang),
+            I18n.tr("col_operation", lang)
         ])
         
         # 如果有差异结果，重新刷新表格
@@ -2786,9 +3060,22 @@ class MainWindow(QMainWindow):
             self._update_table()
     
     def _save_paths(self):
+        # 提取前缀（去掉"目录"尾缀）保存到配置
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+        
         config = {
-            'wintogo_dir': self.wintogo_edit.text().strip(),
-            'local_dir': self.local_edit.text().strip(),
+            'A_dir': self.wintogo_edit.text().strip(),
+            'B_dir': self.local_edit.text().strip(),
             'ignore_rules': self.ignore_rules,
             'sync_rules': self.sync_rules,
             'language': self.current_lang,
@@ -2796,13 +3083,15 @@ class MainWindow(QMainWindow):
             'sync_type': self.sync_type,
             'unidirectional_mode': self.unidirectional_mode,
             'sync_direction': self.sync_direction,
-            'extra_items_mode': self.extra_items_mode
+            'extra_items_mode': self.extra_items_mode,
+            'removable_name': removable_prefix,
+            'local_name': local_prefix
         }
         save_config(config)
     
     def _show_ignore_dialog(self):
         dialog = IgnoreRulesDialog(self.ignore_rules, self.current_lang, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             self.ignore_rules = dialog.get_rules()
             self._save_paths()
             saved_text = self.current_lang == "zh" and f"✅ 已保存 {len(self.ignore_rules)} 条忽略规则" or f"✅ Saved {len(self.ignore_rules)} ignore rules"
@@ -2818,7 +3107,7 @@ class MainWindow(QMainWindow):
     
     def _show_sync_rule_dialog(self):
         dialog = SyncRulesDialog(self.sync_rules, self.current_lang, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             self.sync_rules = dialog.get_rules()
             self._save_paths()
             saved_text = self.current_lang == "zh" and f"✅ 已保存 {len(self.sync_rules)} 条同步规则" or f"✅ Saved {len(self.sync_rules)} sync rules"
@@ -2828,7 +3117,7 @@ class MainWindow(QMainWindow):
     def _show_about_dialog(self):
         """显示关于弹窗"""
         dialog = AboutDialog(self.current_lang, self)
-        dialog.exec_()
+        dialog.exec()
     
     def _on_path_changed(self):
         if self.auto_scan_timer:
@@ -2962,6 +3251,23 @@ class MainWindow(QMainWindow):
         
         lang = self.current_lang
         
+        # 提取名称前缀（去掉"目录"尾缀）
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+        
+        # 构建状态文字
+        removable_only_text = lang == "zh" and f"{removable_prefix}独有" or f"{removable_prefix} Only"
+        local_only_text = lang == "zh" and f"{local_prefix}独有" or f"{local_prefix} Only"
+        
         # 根据同步模式设置不同的颜色
         if self.sync_type == "unidirectional":
             # 单向同步模式
@@ -2973,20 +3279,20 @@ class MainWindow(QMainWindow):
                 if self.sync_direction == "removable_to_local":
                     # 介质 → 本地：源是介质，目标是本地
                     status_map = {
-                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(255, 245, 255)),  # 红色：目标独有，将被删除
-                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
                 else:
                     # 本地 → 介质：源是本地，目标是介质
                     status_map = {
-                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(255, 245, 245)),  # 纅色：目标独有，准备删除
-                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(255, 245, 245)),  # 纅色：目标独有，准备删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
             else:
                 # 差异同步模式
@@ -2996,37 +3302,37 @@ class MainWindow(QMainWindow):
                 if self.sync_direction == "removable_to_local":
                     # 介质 → 本地：源是介质，目标是本地
                     status_map = {
-                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(255, 245, 255)),  # 红色：目标独有，将被删除
-                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
                 else:
                     # 本地 → 介质：源是本地，目标是介质
                     status_map = {
-                        FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
-                        FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(255, 245, 255)),  # 红色：目标独有，将被删除
-                        FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
-                        FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
-                        FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.LOCAL_ONLY: (local_only_text, QColor(227, 245, 255)),  # 绿色：源独有，准备同步至目标
+                        FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(255, 245, 255)),  # 红色：目标独有，将被删除
+                        FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
+                        FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
+                        FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：准备同步至目标的差异项目
                     }
         else:
             # 双向同步模式
             status_map = {
-                FileStatus.WINTOGO_ONLY: (get_text("status_removable_only", lang), QColor(227, 245, 255)),  # 绿色：仅一方存在
-                FileStatus.LOCAL_ONLY: (get_text("status_local_only", lang), QColor(227, 245, 255)),  # 绿色：仅一方存在
-                FileStatus.SAME: (get_text("status_same", lang), QColor(248, 249, 250)),
-                FileStatus.CONFLICT: (get_text("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
-                FileStatus.MTIME_DIFF: (get_text("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
+                FileStatus.WINTOGO_ONLY: (removable_only_text, QColor(227, 245, 255)),  # 绿色：仅一方存在
+                FileStatus.LOCAL_ONLY: (local_only_text, QColor(227, 245, 255)),  # 绿色：仅一方存在
+                FileStatus.SAME: (I18n.tr("status_same", lang), QColor(248, 249, 250)),
+                FileStatus.CONFLICT: (I18n.tr("status_conflict", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
+                FileStatus.MTIME_DIFF: (I18n.tr("status_mtime_diff", lang), QColor(255, 243, 214)),  # 黄色：双方都存在的差异项目
             }
         
         action_map = {
-            FileStatus.WINTOGO_ONLY: get_text("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
-            FileStatus.LOCAL_ONLY: get_text("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
+            FileStatus.WINTOGO_ONLY: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
+            FileStatus.LOCAL_ONLY: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
             FileStatus.SAME: lang == "zh" and "无操作" or "No action",
-            FileStatus.CONFLICT: get_text("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
-            FileStatus.MTIME_DIFF: get_text("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
+            FileStatus.CONFLICT: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
+            FileStatus.MTIME_DIFF: I18n.tr("status_ready", lang).replace("就绪 - 请选择两个目录", "待选择").replace("Ready - Please select two directories", "Pending"),
         }
         
         for diff in self.diff_results:
@@ -3045,7 +3351,6 @@ class MainWindow(QMainWindow):
             # 整行设置背景色
             path_item = QTableWidgetItem(diff.relative_path)
             path_item.setBackground(color)
-            path_item.setForeground(QColor("#495057"))
             path_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.table.setItem(row, 1, path_item)
             
@@ -3082,12 +3387,12 @@ class MainWindow(QMainWindow):
                     action_text = lang == "zh" and "跳过" or "Skip"
                 elif diff.status == FileStatus.WINTOGO_ONLY:
                     if decision == "to_local":
-                        action_text = lang == "zh" and "复制到本地" or "Copy to local"
+                        action_text = lang == "zh" and f"复制到{local_prefix}" or f"Copy to {local_prefix}"
                     elif decision == "delete_wintogo":
                         action_text = lang == "zh" and "删除文件" or "Delete file"
                 elif diff.status == FileStatus.LOCAL_ONLY:
                     if decision == "to_wintogo":
-                        action_text = lang == "zh" and "复制到移动介质" or "Copy to removable"
+                        action_text = lang == "zh" and f"复制到{removable_prefix}" or f"Copy to {removable_prefix}"
                     elif decision == "delete_local":
                         action_text = lang == "zh" and "删除文件" or "Delete file"
                 elif diff.status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
@@ -3174,7 +3479,7 @@ class MainWindow(QMainWindow):
         if not sync_needed:
             QMessageBox.information(self, 
                 lang == "zh" and "提示" or "Info",
-                get_text("msg_no_diff", lang))
+                I18n.tr("msg_no_diff", lang))
             return
         
         # 单向同步模式
@@ -3207,8 +3512,8 @@ class MainWindow(QMainWindow):
                 other_diffs.append(diff)
         
         for subdir, diff_list in rule_diffs.items():
-            dialog = DirSyncDialog(subdir, diff_list, lang, self)
-            if dialog.exec_() == QDialog.Accepted:
+            dialog = DirSyncDialog(subdir, diff_list, lang, self.removable_name, self.local_name, self)
+            if dialog.exec() == QDialog.Accepted:
                 direction = dialog.get_direction()
                 for diff in diff_list:
                     if direction == "wintogo_to_local":
@@ -3284,8 +3589,8 @@ class MainWindow(QMainWindow):
                               and d.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)]
             same_dir_count = len(same_dir_diffs) - 1
             
-            dialog = OnlyOneSideDialog(diff, same_dir_count, lang, self)
-            if dialog.exec_() == QDialog.Accepted:
+            dialog = OnlyOneSideDialog(diff, same_dir_count, lang, self.removable_name, self.local_name, self)
+            if dialog.exec() == QDialog.Accepted:
                 direction = dialog.get_direction()
                 self.conflict_decisions[diff.relative_path] = direction
                 
@@ -3321,7 +3626,7 @@ class MainWindow(QMainWindow):
             same_dir_count = len(same_dir_conflicts) - 1
             
             dialog = ConflictDialog(diff, same_dir_count, lang, self)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.Accepted:
                 direction = dialog.get_direction()
                 self.conflict_decisions[diff.relative_path] = direction
                 
@@ -3357,7 +3662,7 @@ class MainWindow(QMainWindow):
             same_dir_count = len(same_dir_mtime) - 1
             
             dialog = MtimeDiffDialog(diff, same_dir_count, lang, self)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.Accepted:
                 direction = dialog.get_direction()
                 self.conflict_decisions[diff.relative_path] = direction
                 
@@ -3430,7 +3735,7 @@ class MainWindow(QMainWindow):
         cancel_btn = msg_box.addButton("取消", QMessageBox.NoRole)
         msg_box.setDefaultButton(cancel_btn)
         
-        msg_box.exec_()
+        msg_box.exec()
         
         if msg_box.clickedButton() != confirm_btn:
             return
@@ -3573,7 +3878,7 @@ class MainWindow(QMainWindow):
         cancel_btn = msg_box.addButton(lang == "zh" and "取消" or "Cancel", QMessageBox.NoRole)
         msg_box.setDefaultButton(cancel_btn)
         
-        msg_box.exec_()
+        msg_box.exec()
         
         if msg_box.clickedButton() != confirm_btn:
             return
@@ -3614,16 +3919,29 @@ class MainWindow(QMainWindow):
         else:
             # 单向同步：根据方向显示 → 或 ←
             if self.sync_direction == "removable_to_local":
-                # 介质 → 本地
+                # A → B
                 status_key = "header_subtitle_to_local"
             else:
-                # 本地 → 介质（显示为 ←）
+                # A ← B
                 status_key = "header_subtitle_to_removable"
 
-        self.version_label.setText(get_text(status_key, self.current_lang))
+        self.version_label.setText(self._get_subtitle_text(status_key))
     
     def _execute_newest_mode_sync(self, sync_needed, lang):
         """最新优先模式：自动选择较新版本"""
+        # 提取名称前缀（去掉"目录"尾缀）
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+        
         # 自动为所有差异文件选择较新版本
         for diff in sync_needed:
             if diff.status == FileStatus.WINTOGO_ONLY:
@@ -3659,8 +3977,8 @@ class MainWindow(QMainWindow):
         
         # 显示汇总弹窗
         msg = lang == "zh" and "📋 最新优先模式同步汇总\n\n" or "📋 Newest First Mode Summary\n\n"
-        msg += lang == "zh" and f"移动介质 → 本地: {to_local_count + wintogo_to_local_count} 个\n" or f"Removable → Local: {to_local_count + wintogo_to_local_count} files\n"
-        msg += lang == "zh" and f"本地 → 移动介质: {to_wintogo_count + local_to_wintogo_count} 个\n" or f"Local → Removable: {to_wintogo_count + local_to_wintogo_count} files\n"
+        msg += lang == "zh" and f"{removable_prefix} → {local_prefix}: {to_local_count + wintogo_to_local_count} 个\n" or f"{removable_prefix} → {local_prefix}: {to_local_count + wintogo_to_local_count} files\n"
+        msg += lang == "zh" and f"{local_prefix} → {removable_prefix}: {to_wintogo_count + local_to_wintogo_count} 个\n" or f"{local_prefix} → {removable_prefix}: {to_wintogo_count + local_to_wintogo_count} files\n"
         msg += lang == "zh" and f"\n总计: {len(sync_needed)} 个文件将被同步\n\n此操作不可撤销！" or f"\nTotal: {len(sync_needed)} files will be synced\n\nThis action cannot be undone!"
         
         msg_box = QMessageBox(self)
@@ -3672,7 +3990,7 @@ class MainWindow(QMainWindow):
         cancel_btn = msg_box.addButton(lang == "zh" and "取消" or "Cancel", QMessageBox.NoRole)
         msg_box.setDefaultButton(cancel_btn)
         
-        msg_box.exec_()
+        msg_box.exec()
         
         if msg_box.clickedButton() != confirm_btn:
             return
