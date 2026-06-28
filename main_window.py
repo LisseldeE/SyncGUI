@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QFrame, QSizePolicy, QCheckBox, QListWidget, QListWidgetItem,
     QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPoint, QPropertyAnimation, QByteArray
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPoint, QPropertyAnimation, QByteArray, QEventLoop
 from PySide6.QtGui import QColor, QFont, QPalette
 
 from sync_core import (
@@ -455,7 +455,601 @@ class SyncWorker(QThread):
         self.finished.emit(success_count, fail_count, skip_count)
 
 
-class ConflictDialog(QDialog):
+class FadeDialog(QDialog):
+    """带淡入淡出动画的对话框基类。
+
+    手动选择模式下连续弹窗会逐个开关，闪烁感强且割裂。
+    通过在 show 时淡入、done 时淡出（局部事件循环等待动画完成），
+    使连续弹窗过渡更平滑。
+    """
+    _FADE_DURATION = 100  # 毫秒，单次淡入或淡出时长
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fade_anim = None
+        self._closing = False
+        # 初始透明，待 showEvent 触发淡入
+        self.setWindowOpacity(0.0)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fade_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_anim.setDuration(self._FADE_DURATION)
+        self._fade_anim.setStartValue(self.windowOpacity())
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.start()
+
+    def done(self, result):
+        if self._closing:
+            return
+        self._closing = True
+        self.setEnabled(False)
+        if self._fade_anim is not None:
+            self._fade_anim.stop()
+        start = self.windowOpacity() or 1.0
+        fade_out = QPropertyAnimation(self, b"windowOpacity", self)
+        fade_out.setDuration(self._FADE_DURATION)
+        fade_out.setStartValue(start)
+        fade_out.setEndValue(0.0)
+        # 局部事件循环等待淡出完成后再真正关闭，避免阻塞 exec() 的返回
+        loop = QEventLoop()
+        fade_out.finished.connect(lambda: (loop.quit(), super(FadeDialog, self).done(result)))
+        fade_out.start()
+        self._fade_anim = fade_out
+        loop.exec()
+
+
+# ============================================================
+# 手动选择翻页式向导（SlideContainer + DiffPage + ManualSyncWizard）
+# 替代逐个弹窗的 ConflictDialog / OnlyOneSideDialog / MtimeDiffDialog
+# ============================================================
+
+class DiffPage(QWidget):
+    """单个 diff 的内容页面（不含底部按钮，由 ManualSyncWizard 提供固定按钮区）。"""
+
+    def __init__(self, diff: DiffResult, same_dir_count: int, lang: str,
+                 removable_name: str, local_name: str, parent=None):
+        super().__init__(parent)
+        self.diff = diff
+        self.same_dir_count = same_dir_count
+        self.lang = lang
+        self.removable_name = removable_name
+        self.local_name = local_name
+        self.wintogo_newer = None  # 仅 CONFLICT / MTIME_DIFF 有效
+        self._dark = _is_dark_mode()
+        self._build_ui()
+
+    # ---- 颜色辅助 ----
+
+    def _muted_color(self):
+        """次要文字颜色（深色模式下用浅灰）。"""
+        return "#adb5bd" if self._dark else "#495057"
+
+    def _hint_color(self):
+        """提示文字颜色。"""
+        return "#ced4da" if self._dark else "#868e96"
+
+    def _hline_color(self):
+        return "#3a3a3a" if self._dark else "#e9ecef"
+
+    def _box_border(self):
+        return "#3a3a3a" if self._dark else "#dee2e6"
+
+    # ---- UI 构建 ----
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(28, 16, 28, 12)
+
+        status = self.diff.status
+        if status == FileStatus.CONFLICT:
+            self._build_conflict(layout)
+        elif status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY):
+            self._build_only_one_side(layout)
+        elif status == FileStatus.MTIME_DIFF:
+            self._build_mtime_diff(layout)
+
+    def _hline(self):
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"QFrame {{ background-color: {self._hline_color()}; border: none; }}")
+        return line
+
+    def _file_label(self):
+        lbl = QLabel(I18n.tr("file_label", self.lang, path=self.diff.relative_path))
+        lbl.setStyleSheet(f"font-size: 13px; padding: 6px 0; border: none;")
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lbl.setWordWrap(True)
+        return lbl
+
+    def _time_boxes(self):
+        """构建两端时间对比框（CONFLICT / MTIME_DIFF 共用）。"""
+        widget = QWidget()
+        lay = QHBoxLayout(widget)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(12)
+
+        w_time = datetime.fromtimestamp(self.diff.wintogo_info.mtime).strftime('%Y-%m-%d %H:%M:%S')
+        l_time = datetime.fromtimestamp(self.diff.local_info.mtime).strftime('%Y-%m-%d %H:%M:%S')
+
+        border = self._box_border()
+        muted = self._muted_color()
+
+        w_box = QFrame()
+        w_box.setStyleSheet(f"QFrame {{ border-radius: 8px; padding: 8px; border: 1px solid {border}; }}")
+        w_lay = QVBoxLayout(w_box)
+        w_lay.setSpacing(2)
+        w_title = QLabel(I18n.tr("removable_time", self.lang))
+        w_title.setStyleSheet("font-weight: bold; color: #1971c2; font-size: 13px;")
+        w_title.setAlignment(Qt.AlignCenter)
+        w_time_lbl = QLabel(w_time)
+        w_time_lbl.setStyleSheet(f"color: {muted}; font-size: 12px;")
+        w_time_lbl.setAlignment(Qt.AlignCenter)
+        w_lay.addWidget(w_title)
+        w_lay.addWidget(w_time_lbl)
+
+        l_box = QFrame()
+        l_box.setStyleSheet(f"QFrame {{ border-radius: 8px; padding: 8px; border: 1px solid {border}; }}")
+        l_lay = QVBoxLayout(l_box)
+        l_lay.setSpacing(2)
+        l_title = QLabel(I18n.tr("local_time", self.lang))
+        l_title.setStyleSheet("font-weight: bold; color: #2f9e44; font-size: 13px;")
+        l_title.setAlignment(Qt.AlignCenter)
+        l_time_lbl = QLabel(l_time)
+        l_time_lbl.setStyleSheet(f"color: {muted}; font-size: 12px;")
+        l_time_lbl.setAlignment(Qt.AlignCenter)
+        l_lay.addWidget(l_title)
+        l_lay.addWidget(l_time_lbl)
+
+        lay.addWidget(w_box)
+        lay.addWidget(l_box)
+        return widget
+
+    def _choice_label(self):
+        lbl = QLabel(I18n.tr("choice_label", self.lang))
+        lbl.setStyleSheet("font-weight: bold; font-size: 14px;")
+        return lbl
+
+    def _add_apply_dir_check(self, layout):
+        if self.same_dir_count > 0:
+            self.apply_dir_check = QCheckBox(I18n.tr("apply_dir_files", self.lang, count=self.same_dir_count))
+            self.apply_dir_check.setStyleSheet("color: #1971c2; font-weight: 500;")
+            self.apply_dir_check.setChecked(True)
+            layout.addWidget(self.apply_dir_check)
+
+    def _build_conflict(self, layout):
+        self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
+
+        title = QLabel(I18n.tr("conflict_title", self.lang))
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #e03131;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        layout.addWidget(self._hline())
+        layout.addWidget(self._file_label())
+        layout.addWidget(self._time_boxes())
+
+        newer_side = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
+        hint = QLabel(I18n.tr("newer_hint", self.lang, side=newer_side))
+        hint.setStyleSheet("color: #fd7e14; font-size: 13px;")
+        hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint)
+        layout.addWidget(self._hline())
+        layout.addWidget(self._choice_label())
+
+        self.button_group = QButtonGroup(self)
+        older_side = I18n.tr("local_time", self.lang) if self.wintogo_newer else I18n.tr("removable_time", self.lang)
+
+        self.rb_newer = QRadioButton(I18n.tr("keep_newest", self.lang, side=newer_side))
+        self.rb_older = QRadioButton(I18n.tr("keep_older", self.lang, side=older_side))
+        self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
+        self.rb_skip = QRadioButton(I18n.tr("skip_file", self.lang))
+        self.rb_newer.setChecked(True)
+
+        self.button_group.addButton(self.rb_newer, 0)
+        self.button_group.addButton(self.rb_older, 1)
+        self.button_group.addButton(self.rb_delete_both, 2)
+        self.button_group.addButton(self.rb_skip, 3)
+        for rb in (self.rb_newer, self.rb_older, self.rb_delete_both, self.rb_skip):
+            layout.addWidget(rb)
+
+        self._add_apply_dir_check(layout)
+        layout.addStretch()
+
+    def _build_only_one_side(self, layout):
+        is_wintogo_only = self.diff.status == FileStatus.WINTOGO_ONLY
+        side_name = I18n.tr("removable_time", self.lang) if is_wintogo_only else I18n.tr("local_time", self.lang)
+
+        title = QLabel(I18n.tr("diff_title", self.lang) + f" ({side_name})")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #1971c2;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        layout.addWidget(self._hline())
+        layout.addWidget(self._file_label())
+
+        info = self.diff.wintogo_info if is_wintogo_only else self.diff.local_info
+        if info:
+            size_str = self._format_size(info.size)
+            mtime_str = datetime.fromtimestamp(info.mtime).strftime('%Y-%m-%d %H:%M:%S')
+            size_text = self.lang == "zh" and "大小" or "Size"
+            mtime_text = self.lang == "zh" and "修改时间" or "Modified"
+            info_lbl = QLabel(f"{size_text}: {size_str}  |  {mtime_text}: {mtime_str}")
+            info_lbl.setStyleSheet(f"color: {self._hint_color()}; font-size: 12px;")
+            info_lbl.setAlignment(Qt.AlignCenter)
+            layout.addWidget(info_lbl)
+
+        layout.addWidget(self._hline())
+        layout.addWidget(self._choice_label())
+
+        self.button_group = QButtonGroup(self)
+
+        # 名称前缀裁剪
+        removable_prefix = self.removable_name
+        if removable_prefix.endswith("目录"):
+            removable_prefix = removable_prefix[:-2]
+        elif removable_prefix.endswith("Directory"):
+            removable_prefix = removable_prefix[:-9]
+        local_prefix = self.local_name
+        if local_prefix.endswith("目录"):
+            local_prefix = local_prefix[:-2]
+        elif local_prefix.endswith("Directory"):
+            local_prefix = local_prefix[:-9]
+
+        if is_wintogo_only:
+            copy_text = self.lang == "zh" and f"➡️ {removable_prefix} → {local_prefix}（补充{local_prefix}缺失的文件）" or f"➡️ {removable_prefix} → {local_prefix}"
+        else:
+            copy_text = self.lang == "zh" and f"➡️ {local_prefix} → {removable_prefix}（补充{removable_prefix}缺失的文件）" or f"➡️ {local_prefix} → {removable_prefix}"
+
+        delete_text = self.lang == "zh" and f"🗑️ 删除此文件（移除{side_name}多余的文件）" or f"🗑️ Delete this file"
+        self.rb_copy = QRadioButton(copy_text)
+        self.rb_delete = QRadioButton(delete_text)
+        self.rb_skip = QRadioButton(I18n.tr("skip_file", self.lang))
+        self.rb_copy.setChecked(True)
+
+        self.button_group.addButton(self.rb_copy, 0)
+        self.button_group.addButton(self.rb_delete, 1)
+        self.button_group.addButton(self.rb_skip, 2)
+        for rb in (self.rb_copy, self.rb_delete, self.rb_skip):
+            layout.addWidget(rb)
+
+        self._add_apply_dir_check(layout)
+        layout.addStretch()
+
+    def _build_mtime_diff(self, layout):
+        self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
+
+        title = QLabel(I18n.tr("mtime_title", self.lang))
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #fd7e14;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        hint_text = self.lang == "zh" and "文件大小相同，但修改时间不同" or "Same size, but different modification time"
+        hint0 = QLabel(hint_text)
+        hint0.setStyleSheet(f"color: {self._hint_color()}; font-size: 12px;")
+        hint0.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint0)
+        layout.addWidget(self._hline())
+        layout.addWidget(self._file_label())
+        layout.addWidget(self._time_boxes())
+
+        newer_side = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
+        hint2 = QLabel(I18n.tr("newer_hint", self.lang, side=newer_side))
+        hint2.setStyleSheet("color: #fd7e14; font-size: 13px;")
+        hint2.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint2)
+        layout.addWidget(self._hline())
+        layout.addWidget(self._choice_label())
+
+        self.button_group = QButtonGroup(self)
+        older_side = I18n.tr("local_time", self.lang) if self.wintogo_newer else I18n.tr("removable_time", self.lang)
+
+        newer_text = self.lang == "zh" and f"✨ 用{newer_side}（较新）覆盖{older_side}" or f"✨ Use {newer_side} (newer) to overwrite"
+        older_text = self.lang == "zh" and f"📥 用{older_side}（较旧）覆盖{newer_side}" or f"📥 Use {older_side} (older) to overwrite"
+        self.rb_newer = QRadioButton(newer_text)
+        self.rb_older = QRadioButton(older_text)
+        self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
+        self.rb_skip = QRadioButton(self.lang == "zh" and "⏭️ 跳过（保持现状）" or "⏭️ Skip (keep current)")
+        self.rb_newer.setChecked(True)
+
+        self.button_group.addButton(self.rb_newer, 0)
+        self.button_group.addButton(self.rb_older, 1)
+        self.button_group.addButton(self.rb_delete_both, 2)
+        self.button_group.addButton(self.rb_skip, 3)
+        for rb in (self.rb_newer, self.rb_older, self.rb_delete_both, self.rb_skip):
+            layout.addWidget(rb)
+
+        self._add_apply_dir_check(layout)
+        layout.addStretch()
+
+    # ---- 结果获取 ----
+
+    def _format_size(self, size: int) -> str:
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TB"
+
+    def get_direction(self):
+        checked_id = self.button_group.checkedId()
+        status = self.diff.status
+
+        if status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
+            if checked_id == 0:
+                return "wintogo_to_local" if self.wintogo_newer else "local_to_wintogo"
+            elif checked_id == 1:
+                return "local_to_wintogo" if self.wintogo_newer else "wintogo_to_local"
+            elif checked_id == 2:
+                return "delete_both"
+            else:
+                return "skip"
+        else:  # WINTOGO_ONLY / LOCAL_ONLY
+            is_wintogo_only = status == FileStatus.WINTOGO_ONLY
+            if checked_id == 0:
+                return "to_local" if is_wintogo_only else "to_wintogo"
+            elif checked_id == 1:
+                return "delete_wintogo" if is_wintogo_only else "delete_local"
+            else:
+                return "skip"
+
+    def should_apply_to_dir(self):
+        if self.same_dir_count > 0 and hasattr(self, 'apply_dir_check'):
+            return self.apply_dir_check.isChecked()
+        return False
+
+
+class ManualSyncWizard(QDialog):
+    """手动选择模式翻页式向导。
+
+    固定窗口，内容区由右向左滑动切换，底部按钮固定。
+    支持上一个 / 确认 / 跳过 / 取消同步。
+    勾选"应用到同目录"时批量决策同目录同状态的其他 diff，并自动跳过。
+    """
+
+    SLIDE_DURATION = 200  # 毫秒
+
+    def __init__(self, diffs, same_dir_counts, lang, removable_name, local_name, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self.removable_name = removable_name
+        self.local_name = local_name
+        self.diffs = diffs
+        self.same_dir_counts = same_dir_counts
+        self.decisions = {}          # {relative_path: direction}
+        self.cancel_sync = False
+        self.current_index = 0
+        self._current_page = None
+        self._sliding = False
+        self._dark = _is_dark_mode()
+
+        self.setWindowTitle(I18n.tr("wizard_title", lang))
+        self.setFixedSize(860, 560)
+
+        self._init_style()
+        self._init_ui()
+        self._show_page(0, animate=False)
+
+    def _init_style(self):
+        border_color = "#3a3a3a" if self._dark else "#e9ecef"
+        text_muted = "#adb5bd" if self._dark else "#495057"
+        btn_border = "#495057" if self._dark else "#ced4da"
+        btn_border_hover = "#868e96" if self._dark else "#adb5bd"
+        btn_disabled_border = "#3a3a3a" if self._dark else "#e9ecef"
+
+        if self._dark:
+            base_bg = "#2d2d2d"
+            base_text = "#e0e0e0"
+        else:
+            base_bg = "#ffffff"
+            base_text = "#212529"
+
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {base_bg}; }}
+            QWidget#slideHost {{ background-color: {base_bg}; }}
+            QFrame#header {{ background-color: {base_bg}; border-bottom: 1px solid {border_color}; }}
+            QFrame#footer {{ background-color: {base_bg}; border-top: 1px solid {border_color}; }}
+            QLabel {{ color: {base_text}; }}
+            QRadioButton {{ padding: 6px 10px; font-size: 13px; color: {base_text}; }}
+            QRadioButton::indicator {{ width: 18px; height: 18px; border-radius: 9px; border: 2px solid {btn_border}; }}
+            QRadioButton::indicator:hover {{ border: 2px solid {btn_border_hover}; }}
+            QRadioButton::indicator:checked {{ border: 2px solid #2f9e44; background-color: #2f9e44; }}
+            QCheckBox {{ padding: 6px 8px; font-size: 13px; color: {base_text}; }}
+            QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 4px; border: 2px solid {btn_border}; }}
+            QCheckBox::indicator:hover {{ border: 2px solid {btn_border_hover}; }}
+            QCheckBox::indicator:checked {{ border: 2px solid #2f9e44; background-color: #2f9e44; }}
+            QPushButton {{ padding: 8px 24px; border-radius: 6px; font-size: 13px; font-weight: 500; }}
+        """)
+        self._border_color = border_color
+        self._text_muted = text_muted
+        self._btn_disabled_border = btn_disabled_border
+        self._base_text = base_text
+        self._base_bg = base_bg
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(0)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        # ---- 顶部进度条 ----
+        header = QFrame()
+        header.setObjectName("header")
+        h_lay = QHBoxLayout(header)
+        h_lay.setContentsMargins(28, 10, 28, 10)
+        self.progress_label = QLabel()
+        self.progress_label.setStyleSheet(f"font-size: 13px; color: {self._text_muted}; font-weight: 500;")
+        h_lay.addWidget(self.progress_label)
+        h_lay.addStretch()
+        root.addWidget(header)
+
+        # ---- 内容滑动区（无 layout，手动管理页面 pos 以实现滑动）----
+        self.slide_host = QWidget()
+        self.slide_host.setObjectName("slideHost")
+        root.addWidget(self.slide_host, 1)
+
+        # ---- 底部固定按钮区 ----
+        footer = QFrame()
+        footer.setObjectName("footer")
+        f_lay = QHBoxLayout(footer)
+        f_lay.setContentsMargins(28, 12, 28, 12)
+
+        self.prev_btn = QPushButton(I18n.tr("wizard_prev", self.lang))
+        self.prev_btn.setMinimumSize(90, 36)
+        self.prev_btn.setStyleSheet(f"""
+            QPushButton {{ border: 1px solid {self._border_color}; border-radius: 6px; }}
+            QPushButton:hover {{ border: 1px solid #868e96; }}
+            QPushButton:disabled {{ color: {self._text_muted}; border-color: {self._btn_disabled_border}; }}
+        """)
+        self.prev_btn.clicked.connect(self._go_prev)
+
+        self.confirm_btn = QPushButton(I18n.tr("btn_confirm", self.lang))
+        self.confirm_btn.setMinimumSize(100, 38)
+        self.confirm_btn.setStyleSheet("""
+            QPushButton { background-color: #40c057; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; }
+            QPushButton:hover { background-color: #37b24d; }
+            QPushButton:pressed { background-color: #2f9e44; }
+        """)
+        self.confirm_btn.clicked.connect(self._confirm_current)
+
+        self.skip_btn = QPushButton(I18n.tr("wizard_skip", self.lang))
+        self.skip_btn.setMinimumSize(90, 36)
+        self.skip_btn.setStyleSheet(f"""
+            QPushButton {{ border: 1px solid {self._border_color}; border-radius: 6px; }}
+            QPushButton:hover {{ border: 1px solid #868e96; }}
+        """)
+        self.skip_btn.clicked.connect(self._skip_current)
+
+        self.cancel_sync_btn = QPushButton(I18n.tr("btn_cancel_sync", self.lang))
+        self.cancel_sync_btn.setMinimumSize(120, 38)
+        self.cancel_sync_btn.setStyleSheet("""
+            QPushButton { background-color: #ff6b6b; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; }
+            QPushButton:hover { background-color: #fa5252; }
+            QPushButton:pressed { background-color: #e03131; }
+        """)
+        self.cancel_sync_btn.clicked.connect(self._cancel_sync)
+
+        f_lay.addWidget(self.prev_btn)
+        f_lay.addStretch()
+        f_lay.addWidget(self.confirm_btn)
+        f_lay.addSpacing(8)
+        f_lay.addWidget(self.skip_btn)
+        f_lay.addStretch()
+        f_lay.addWidget(self.cancel_sync_btn)
+        root.addWidget(footer)
+
+    # ---- 页面切换（滑动）----
+
+    def _show_page(self, index, animate=True, direction=1):
+        diff = self.diffs[index]
+        same_dir_count = self.same_dir_counts.get(diff.relative_path, 0)
+        new_page = DiffPage(diff, same_dir_count, self.lang, self.removable_name, self.local_name)
+        new_page.setParent(self.slide_host)
+        new_page.resize(self.slide_host.size())
+
+        if not animate or self._current_page is None:
+            if self._current_page:
+                self._current_page.deleteLater()
+            self._current_page = new_page
+            new_page.move(0, 0)
+            new_page.show()
+        else:
+            self._sliding = True
+            old_page = self._current_page
+            w = self.slide_host.width()
+            start_x = w if direction > 0 else -w
+            new_page.move(start_x, 0)
+            new_page.show()
+
+            anim_old = QPropertyAnimation(old_page, b"pos", self)
+            anim_old.setDuration(self.SLIDE_DURATION)
+            anim_old.setStartValue(QPoint(0, 0))
+            anim_old.setEndValue(QPoint(-w if direction > 0 else w, 0))
+
+            anim_new = QPropertyAnimation(new_page, b"pos", self)
+            anim_new.setDuration(self.SLIDE_DURATION)
+            anim_new.setStartValue(QPoint(start_x, 0))
+            anim_new.setEndValue(QPoint(0, 0))
+
+            def _on_finished():
+                old_page.deleteLater()
+                self._current_page = new_page
+                self._sliding = False
+
+            anim_old.finished.connect(_on_finished)
+            anim_old.start()
+            anim_new.start()
+
+        self.current_index = index
+        self._update_ui_state()
+
+    def _update_ui_state(self):
+        total = len(self.diffs)
+        self.progress_label.setText(
+            I18n.tr("wizard_progress", self.lang, current=self.current_index + 1, total=total))
+        self.prev_btn.setEnabled(self.current_index > 0 and not self._sliding)
+        if self.current_index >= total - 1:
+            self.confirm_btn.setText(I18n.tr("wizard_finish", self.lang))
+        else:
+            self.confirm_btn.setText(I18n.tr("btn_confirm", self.lang))
+
+    # ---- 按钮动作 ----
+
+    def _confirm_current(self):
+        if self._sliding or self._current_page is None:
+            return
+        page = self._current_page
+        direction = page.get_direction()
+        apply_to_dir = page.should_apply_to_dir()
+        diff = self.diffs[self.current_index]
+        self.decisions[diff.relative_path] = direction
+
+        if apply_to_dir:
+            parent_dir = os.path.dirname(diff.relative_path)
+            for other in self.diffs:
+                if (other.relative_path != diff.relative_path
+                        and os.path.dirname(other.relative_path) == parent_dir
+                        and other.status == diff.status
+                        and other.relative_path not in self.decisions):
+                    self.decisions[other.relative_path] = direction
+
+        self._go_next()
+
+    def _skip_current(self):
+        if self._sliding:
+            return
+        diff = self.diffs[self.current_index]
+        self.decisions[diff.relative_path] = "skip"
+        self._go_next()
+
+    def _go_next(self):
+        idx = self.current_index + 1
+        while idx < len(self.diffs):
+            if self.diffs[idx].relative_path not in self.decisions:
+                break
+            idx += 1
+        if idx >= len(self.diffs):
+            self.accept()
+            return
+        self._show_page(idx, animate=True, direction=1)
+
+    def _go_prev(self):
+        if self._sliding or self.current_index <= 0:
+            return
+        # 回到上一页时清除其旧决策，允许重新选择
+        prev_diff = self.diffs[self.current_index - 1]
+        self.decisions.pop(prev_diff.relative_path, None)
+        self._show_page(self.current_index - 1, animate=True, direction=-1)
+
+    def _cancel_sync(self):
+        self.cancel_sync = True
+        self.reject()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_page and not self._sliding:
+            self._current_page.resize(self.slide_host.size())
+
+
+class ConflictDialog(FadeDialog):
     def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
@@ -478,6 +1072,16 @@ class ConflictDialog(QDialog):
             QRadioButton::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 9px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QRadioButton::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QCheckBox {
                 padding: 8px;
@@ -486,6 +1090,16 @@ class ConflictDialog(QDialog):
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 4px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QPushButton {
                 padding: 10px 24px;
@@ -707,7 +1321,7 @@ class ConflictDialog(QDialog):
         return False
 
 
-class OnlyOneSideDialog(QDialog):
+class OnlyOneSideDialog(FadeDialog):
     def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", removable_name: str = "移动介质目录", local_name: str = "本地目录", parent=None):
         super().__init__(parent)
         self.lang = lang
@@ -731,6 +1345,16 @@ class OnlyOneSideDialog(QDialog):
             QRadioButton::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 9px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QRadioButton::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QCheckBox {
                 padding: 8px;
@@ -739,6 +1363,16 @@ class OnlyOneSideDialog(QDialog):
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 4px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QPushButton {
                 padding: 10px 24px;
@@ -941,7 +1575,7 @@ class OnlyOneSideDialog(QDialog):
         return False
 
 
-class MtimeDiffDialog(QDialog):
+class MtimeDiffDialog(FadeDialog):
     def __init__(self, diff: DiffResult, same_dir_count: int = 0, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
@@ -963,6 +1597,16 @@ class MtimeDiffDialog(QDialog):
             QRadioButton::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 9px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QRadioButton::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QCheckBox {
                 padding: 8px;
@@ -971,6 +1615,16 @@ class MtimeDiffDialog(QDialog):
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 4px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QPushButton {
                 padding: 10px 24px;
@@ -1361,7 +2015,7 @@ class IgnoreRulesDialog(QDialog):
         return self.rules
 
 
-class DirSyncDialog(QDialog):
+class DirSyncDialog(FadeDialog):
     def __init__(self, dir_path: str, diff_list: list, lang: str = "zh", removable_name: str = "移动介质目录", local_name: str = "本地目录", parent=None):
         super().__init__(parent)
         self.lang = lang
@@ -1384,6 +2038,16 @@ class DirSyncDialog(QDialog):
             QRadioButton::indicator {
                 width: 18px;
                 height: 18px;
+                border-radius: 9px;
+                border: 2px solid #adb5bd;
+                background-color: #ffffff;
+            }
+            QRadioButton::indicator:hover {
+                border: 2px solid #868e96;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #2f9e44;
+                background-color: #2f9e44;
             }
             QPushButton {
                 padding: 10px 24px;
@@ -2734,6 +3398,33 @@ QHeaderView::section:last {{
                 # 自动触发扫描
                 self._start_scan()
     
+    def _inactive_btn_style(self) -> str:
+        """非激活态按钮 QSS：深色模式下使用深灰背景，避免在深色窗口中显为突兀的白块"""
+        if _is_dark_mode():
+            return """
+                QPushButton {
+                    background-color: #2d2d2d;
+                    color: #e0e0e0;
+                    border: 1px solid rgba(255, 255, 255, 0.4);
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #383838;
+                    border: 1px solid rgba(255, 255, 255, 0.7);
+                }
+            """
+        return """
+            QPushButton {
+                background-color: #e9ecef;
+                color: #495057;
+                border: 1px solid #ced4da;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #dee2e6;
+            }
+        """
+
     def _update_sync_type_button(self):
         """更新同步类型按钮显示"""
         if self.sync_type == "unidirectional":
@@ -2751,17 +3442,7 @@ QHeaderView::section:last {{
             """)
         else:
             self.sync_type_btn.setText(I18n.tr("sync_type_bidirectional", self.current_lang))
-            self.sync_type_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #e9ecef;
-                    color: #495057;
-                    border: 1px solid #ced4da;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #dee2e6;
-                }
-            """)
+            self.sync_type_btn.setStyleSheet(self._inactive_btn_style())
         self.sync_type_btn.adjustSize()
     
     def _toggle_unidirectional_mode(self):
@@ -2793,17 +3474,7 @@ QHeaderView::section:last {{
             """)
         else:
             self.unidirectional_mode_btn.setText(I18n.tr("unidirectional_mode_diff", self.current_lang))
-            self.unidirectional_mode_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #e9ecef;
-                    color: #495057;
-                    border: 1px solid #ced4da;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #dee2e6;
-                }
-            """)
+            self.unidirectional_mode_btn.setStyleSheet(self._inactive_btn_style())
         self.unidirectional_mode_btn.adjustSize()
     
     def _toggle_extra_items_mode(self):
@@ -2950,6 +3621,8 @@ QHeaderView::section:last {{
         self._update_mode_button()
         # 保存同步模式设置到配置文件
         self._save_paths()
+        # 自动触发扫描差异，与 _toggle_unidirectional_mode 行为一致
+        self._auto_scan_on_change()
 
     def _rename_removable(self):
         """修改移动介质目录名称"""
@@ -3055,17 +3728,7 @@ QHeaderView::section:last {{
             self._fade_widget(self.sync_rule_btn, False)
         else:
             self.mode_btn.setText(I18n.tr("mode_default", self.current_lang))
-            self.mode_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #e9ecef;
-                    color: #495057;
-                    border: 1px solid #ced4da;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #dee2e6;
-                }
-            """)
+            self.mode_btn.setStyleSheet(self._inactive_btn_style())
             # 默认模式下显示同步规则按钮（仅在双向模式下）
             if self.sync_type == "bidirectional":
                 self._fade_widget(self.sync_rule_btn, True)
@@ -3597,119 +4260,43 @@ QHeaderView::section:last {{
         for diff in other_diffs:
             parent_dir = self._get_parent_dir(diff.relative_path)
             dir_diffs[parent_dir].append(diff)
-        
-        processed_dirs = set()
-        
-        only_one_side = [d for d in other_diffs if d.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)]
-        conflicts = [d for d in other_diffs if d.status == FileStatus.CONFLICT]
-        mtime_diffs = [d for d in other_diffs if d.status == FileStatus.MTIME_DIFF]
-        
-        for diff in only_one_side:
-            if diff.relative_path in self.conflict_decisions:
-                continue
-            
+
+        # 收集需要逐个决策的 diff（按 独有 → 冲突 → 时间差异 顺序）
+        manual_diffs = []
+        for diff in other_diffs:
+            if diff.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY,
+                               FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
+                if diff.relative_path not in self.conflict_decisions:
+                    manual_diffs.append(diff)
+
+        # 计算每个 diff 的 same_dir_count（同目录同状态未决策数量 - 1）
+        same_dir_counts = {}
+        for diff in manual_diffs:
             parent_dir = self._get_parent_dir(diff.relative_path)
-            
-            same_dir_diffs = [d for d in dir_diffs[parent_dir] 
-                              if d.relative_path not in self.conflict_decisions 
-                              and d.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)]
-            same_dir_count = len(same_dir_diffs) - 1
-            
-            dialog = OnlyOneSideDialog(diff, same_dir_count, lang, self.removable_name, self.local_name, self)
-            if dialog.exec() == QDialog.Accepted:
-                direction = dialog.get_direction()
-                self.conflict_decisions[diff.relative_path] = direction
-                
-                if dialog.should_apply_to_dir() and parent_dir not in processed_dirs:
-                    for other_diff in same_dir_diffs:
-                        if other_diff.relative_path != diff.relative_path:
-                            self.conflict_decisions[other_diff.relative_path] = direction
-                    processed_dirs.add(parent_dir)
-                # 更新表格显示
-                self._update_table()
-            elif dialog.cancel_sync:
-                # 取消本次同步，清除已选择的状态并刷新表格
+            same_dir = [d for d in dir_diffs[parent_dir]
+                        if d.status == diff.status
+                        and d.relative_path not in self.conflict_decisions]
+            same_dir_counts[diff.relative_path] = len(same_dir) - 1
+
+        if manual_diffs:
+            wizard = ManualSyncWizard(manual_diffs, same_dir_counts, lang,
+                                       self.removable_name, self.local_name, self)
+            wizard.exec()
+
+            if wizard.cancel_sync:
                 self.conflict_decisions.clear()
                 self._delete_both_dirs.clear()
                 self._update_table()
                 return
-            else:
-                self.conflict_decisions[diff.relative_path] = "skip"
-                # 更新表格显示
-                self._update_table()
-        
-        processed_dirs = set()
-        
-        for diff in conflicts:
-            if diff.relative_path in self.conflict_decisions:
-                continue
-            
-            parent_dir = self._get_parent_dir(diff.relative_path)
-            
-            same_dir_conflicts = [d for d in dir_diffs[parent_dir] 
-                                  if d.relative_path not in self.conflict_decisions
-                                  and d.status == FileStatus.CONFLICT]
-            same_dir_count = len(same_dir_conflicts) - 1
-            
-            dialog = ConflictDialog(diff, same_dir_count, lang, self)
-            if dialog.exec() == QDialog.Accepted:
-                direction = dialog.get_direction()
-                self.conflict_decisions[diff.relative_path] = direction
-                
-                if dialog.should_apply_to_dir() and parent_dir not in processed_dirs:
-                    for other_diff in same_dir_conflicts:
-                        if other_diff.relative_path != diff.relative_path:
-                            self.conflict_decisions[other_diff.relative_path] = direction
-                    processed_dirs.add(parent_dir)
-                # 更新表格显示
-                self._update_table()
-            elif dialog.cancel_sync:
-                # 取消本次同步，清除已选择的状态并刷新表格
-                self.conflict_decisions.clear()
-                self._delete_both_dirs.clear()
-                self._update_table()
-                return
-            else:
-                self.conflict_decisions[diff.relative_path] = "skip"
-                # 更新表格显示
-                self._update_table()
-        
-        processed_dirs = set()
-        
-        for diff in mtime_diffs:
-            if diff.relative_path in self.conflict_decisions:
-                continue
-            
-            parent_dir = self._get_parent_dir(diff.relative_path)
-            
-            same_dir_mtime = [d for d in dir_diffs[parent_dir] 
-                              if d.relative_path not in self.conflict_decisions
-                              and d.status == FileStatus.MTIME_DIFF]
-            same_dir_count = len(same_dir_mtime) - 1
-            
-            dialog = MtimeDiffDialog(diff, same_dir_count, lang, self)
-            if dialog.exec() == QDialog.Accepted:
-                direction = dialog.get_direction()
-                self.conflict_decisions[diff.relative_path] = direction
-                
-                if dialog.should_apply_to_dir() and parent_dir not in processed_dirs:
-                    for other_diff in same_dir_mtime:
-                        if other_diff.relative_path != diff.relative_path:
-                            self.conflict_decisions[other_diff.relative_path] = direction
-                    processed_dirs.add(parent_dir)
-                # 更新表格显示
-                self._update_table()
-            elif dialog.cancel_sync:
-                # 取消本次同步，清除已选择的状态并刷新表格
-                self.conflict_decisions.clear()
-                self._delete_both_dirs.clear()
-                self._update_table()
-                return
-            else:
-                self.conflict_decisions[diff.relative_path] = "skip"
-                # 更新表格显示
-                self._update_table()
-        
+
+            # 合并向导决策
+            self.conflict_decisions.update(wizard.decisions)
+
+            # 向导未触及的项（用户中途关闭窗口等）默认跳过
+            for diff in manual_diffs:
+                if diff.relative_path not in self.conflict_decisions:
+                    self.conflict_decisions[diff.relative_path] = "skip"
+
         self._update_table()
         
         # 统计源独有项目（WINTOGO_ONLY 和 LOCAL_ONLY）

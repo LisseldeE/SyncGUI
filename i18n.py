@@ -48,9 +48,9 @@ class I18n:
             "sync_btn": "▶ 执行同步",
             "ignore_btn": "⚙ 忽略规则",
             "sync_rule_btn": "📁 同步规则",
-            "mode_btn": "📋 手动选择",
-            "mode_newest": "📋 最新优先",
-            "mode_default": "📋 手动选择",
+            "mode_btn": "手动选择",
+            "mode_newest": "最新优先",
+            "mode_default": "手动选择",
             "language_btn": "🌐 EN",
             
             # 进度和状态
@@ -136,6 +136,13 @@ class I18n:
             "btn_no": "否",
             "btn_cancel_sync": "❌ 取消本次同步",
             "btn_about": "关于",
+
+            # 手动选择向导
+            "wizard_title": "手动选择向导",
+            "wizard_progress": "第 {current}/{total} 项",
+            "wizard_prev": "上一个",
+            "wizard_skip": "跳过此项",
+            "wizard_finish": "完成",
             
             # 同步模式
             "sync_type_bidirectional": "双向同步",
@@ -151,7 +158,7 @@ class I18n:
             "about_title": "关于 SyncGUI",
             "about_version_label": "版本",
             "about_author_label": "作者",
-            "about_description": "一个简洁高效的本地与移动介质双向文件同步工具",
+            "about_description": "一个简洁高效的双端文件同步工具",
             
             # 检查更新
             "btn_check_update": "检查更新",
@@ -204,9 +211,9 @@ class I18n:
             "sync_btn": "▶ Sync",
             "ignore_btn": "⚙ Ignore Rules",
             "sync_rule_btn": "📁 Sync Rules",
-            "mode_btn": "📋 Manual Selection",
-            "mode_newest": "📋 Newest First",
-            "mode_default": "📋 Manual Selection",
+            "mode_btn": "Manual Selection",
+            "mode_newest": "Newest First",
+            "mode_default": "Manual Selection",
             "language_btn": "🌐 中文",
             
             # Progress and status
@@ -292,6 +299,13 @@ class I18n:
             "btn_no": "No",
             "btn_cancel_sync": "❌ Cancel Sync",
             "btn_about": "About",
+
+            # Manual sync wizard
+            "wizard_title": "Manual Sync Wizard",
+            "wizard_progress": "Item {current}/{total}",
+            "wizard_prev": "Previous",
+            "wizard_skip": "Skip Item",
+            "wizard_finish": "Finish",
             
             # Sync mode
             "sync_type_bidirectional": "Bidirectional Sync",
@@ -307,7 +321,7 @@ class I18n:
             "about_title": "About SyncGUI",
             "about_version_label": "Version",
             "about_author_label": "Author",
-            "about_description": "A simple and efficient bidirectional file synchronization tool",
+            "about_description": "A simple and efficient dual-endpoint file synchronization tool",
             
             # Check update
             "btn_check_update": "Check Update",

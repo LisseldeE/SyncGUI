@@ -22,7 +22,10 @@ if sys.platform == 'win32':
     from ctypes import wintypes
     import msvcrt
     
-    kernel32 = ctypes.windll.kernel32
+    # 使用 use_last_error=True 加载 kernel32，使 CopyFileExW 失败时
+    # 可通过 ctypes.get_last_error() 取得真实 Win32 错误码（否则始终为 0）
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CopyFileExW.restype = wintypes.BOOL
     
     COPY_FILE_CALLBACK = ctypes.WINFUNCTYPE(
         wintypes.DWORD,
@@ -112,6 +115,11 @@ def rmtree_safe(path: str) -> None:
     shutil.rmtree(path)
 
 
+# 文件比较容差与校验阈值
+MTIME_TOLERANCE = 2.0  # mtime 容差（秒），FAT32/exFAT 时间戳精度为 2 秒
+HASH_VERIFY_MAX_SIZE = 64 * 1024 * 1024  # 超过此大小跳过哈希校验以控制性能，回退为信任 size+mtime
+
+
 class FileStatus(Enum):
     WINTOGO_ONLY = "wintogo_only"
     LOCAL_ONLY = "local_only"
@@ -145,6 +153,29 @@ def calculate_file_hash(file_path: str, chunk_size: int = 8192) -> str:
         while chunk := f.read(chunk_size):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _content_matches(file_a: str, file_b: str, size: int) -> bool:
+    """校验两文件内容是否一致。
+
+    size 相同且 mtime 相近时调用，避免仅凭 size+mtime 将同尺寸不同内容文件误判为相同。
+    超过 HASH_VERIFY_MAX_SIZE 的大文件跳过哈希以控制性能，回退为信任 size+mtime（保持原行为）。
+    哈希计算失败时保守地视为一致，避免因校验异常而误升级为冲突。
+    """
+    if size > HASH_VERIFY_MAX_SIZE:
+        return True
+    try:
+        return calculate_file_hash(file_a) == calculate_file_hash(file_b)
+    except (OSError, PermissionError):
+        return True
+
+
+def _safe_remove(path: str) -> None:
+    """安全删除文件，忽略不存在或权限错误"""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def scan_directory(
@@ -195,6 +226,7 @@ def scan_directory(
                     dir_part, ext = rule.rsplit('.', 1) if '.' in rule else (rule, '')
                     if ext:
                         ext = '.' + ext
+                        dir_part = dir_part.rstrip('/')
                         if normalized_path.startswith(dir_part + '/') and normalized_path.endswith(ext):
                             return True
 
@@ -433,7 +465,7 @@ def compare_files(
                 ))
             else:
                 # 文件大小相同，检查时间戳差异
-                if abs(wintogo_info.mtime - local_info.mtime) > 1:
+                if abs(wintogo_info.mtime - local_info.mtime) > MTIME_TOLERANCE:
                     results.append(DiffResult(
                         relative_path=path,
                         status=FileStatus.MTIME_DIFF,
@@ -441,12 +473,25 @@ def compare_files(
                         local_info=local_info
                     ))
                 else:
-                    results.append(DiffResult(
-                        relative_path=path,
-                        status=FileStatus.SAME,
-                        wintogo_info=wintogo_info,
-                        local_info=local_info
-                    ))
+                    # 时间戳相近，用哈希校验内容是否真正一致，避免同尺寸不同内容被误判为相同
+                    if _content_matches(
+                        os.path.join(wintogo_dir, path),
+                        os.path.join(local_dir, path),
+                        wintogo_info.size
+                    ):
+                        results.append(DiffResult(
+                            relative_path=path,
+                            status=FileStatus.SAME,
+                            wintogo_info=wintogo_info,
+                            local_info=local_info
+                        ))
+                    else:
+                        results.append(DiffResult(
+                            relative_path=path,
+                            status=FileStatus.MTIME_DIFF,
+                            wintogo_info=wintogo_info,
+                            local_info=local_info
+                        ))
         
         if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
             progress_callback(processed, total)
@@ -617,7 +662,7 @@ def compare_files_unidirectional(
                     ))
             else:
                 # 大小相同，检查时间戳
-                if abs(source_info.mtime - target_info.mtime) > 1:
+                if abs(source_info.mtime - target_info.mtime) > MTIME_TOLERANCE:
                     # 时间戳不同
                     if unidirectional_mode == "diff":
                         # 差异同步模式：若源新于目标，则覆盖目标；若目标新于源，则忽略此项目
@@ -641,13 +686,25 @@ def compare_files_unidirectional(
                             local_info=target_info if source_is_wintogo else source_info
                         ))
                 else:
-                    # 完全相同，无需同步
-                    results.append(DiffResult(
-                        relative_path=path,
-                        status=FileStatus.SAME,
-                        wintogo_info=source_info if source_is_wintogo else target_info,
-                        local_info=target_info if source_is_wintogo else source_info
-                    ))
+                    # 时间戳相近，用哈希校验内容是否真正一致，避免同尺寸不同内容被误判为相同
+                    if _content_matches(
+                        os.path.join(source_dir, path),
+                        os.path.join(target_dir, path),
+                        source_info.size
+                    ):
+                        results.append(DiffResult(
+                            relative_path=path,
+                            status=FileStatus.SAME,
+                            wintogo_info=source_info if source_is_wintogo else target_info,
+                            local_info=target_info if source_is_wintogo else source_info
+                        ))
+                    else:
+                        results.append(DiffResult(
+                            relative_path=path,
+                            status=FileStatus.MTIME_DIFF,
+                            wintogo_info=source_info if source_is_wintogo else target_info,
+                            local_info=target_info if source_is_wintogo else source_info
+                        ))
         
         if progress_callback and (processed - last_progress_update >= progress_interval or processed == total):
             progress_callback(processed, total)
@@ -681,32 +738,6 @@ def is_file_locked(file_path: str) -> bool:
             return False
         except (IOError, PermissionError):
             return True
-
-
-def copy_file(source_path: str, dest_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> bool:
-    try:
-        dest_dir = os.path.dirname(dest_path)
-        if not os.path.exists(dest_dir):
-            os.makedirs(dest_dir)
-        
-        for attempt in range(max_retries):
-            try:
-                shutil.copy2(source_path, dest_path)
-                return True
-            except (OSError, PermissionError) as e:
-                if attempt < max_retries - 1:
-                    if is_file_locked(source_path) or is_file_locked(dest_path):
-                        print(f"File locked, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(retry_delay)
-                    else:
-                        break
-                else:
-                    print(f"Error copying {source_path} to {dest_path}: {e}")
-                    return False
-        return False
-    except (OSError, PermissionError) as e:
-        print(f"Error copying {source_path} to {dest_path}: {e}")
-        return False
 
 
 def delete_file(file_path: str, max_retries: int = 3, retry_delay: float = 1.0) -> bool:
@@ -782,63 +813,6 @@ def _remove_empty_path_chain(path: str) -> int:
     return total
 
 
-def remove_empty_directories(base_dir: str) -> int:
-    """
-    递归删除指定目录下的所有空目录（从叶子目录开始向上删除）
-    会多次调用直到所有空目录都被删除
-    只删除 base_dir 范围内的空目录，不会越界处理上级文件
-
-    Args:
-        base_dir: 基础目录路径（同步目录）
-
-    Returns:
-        删除的空目录总数
-    """
-    total_removed = 0
-
-    # 多次调用直到没有空目录可以删除
-    while True:
-        removed_count = 0
-
-        # 从最深层目录开始向上删除，确保叶子空文件夹先被删除
-        for root, dirs, files in os.walk(base_dir, topdown=False):
-            # 跳过基础目录本身（同步目录）
-            if root == base_dir:
-                continue
-
-            # 确保删除的目录是 base_dir 的子目录（安全检查）
-            # 使用路径比较确保不会越界处理上级文件
-            try:
-                # 获取相对路径，如果失败说明不是子目录
-                relative_path = os.path.relpath(root, base_dir)
-                # 如果相对路径以 '..' 开头，说明不是子目录
-                if relative_path.startswith('..'):
-                    print(f"Skipping directory outside sync range: {root}")
-                    continue
-            except ValueError:
-                # 不同驱动器或路径错误，跳过
-                print(f"Skipping invalid path: {root}")
-                continue
-
-            # 如果目录为空（没有文件和子目录）
-            if not files and not dirs:
-                try:
-                    os.rmdir(root)
-                    removed_count += 1
-                    print(f"Removed empty directory: {root}")
-                except OSError as e:
-                    # 目录可能不为空或权限不足，跳过
-                    print(f"Failed to remove directory {root}: {e}")
-
-        total_removed += removed_count
-
-        # 如果这次没有删除任何目录，说明已经没有空目录了，退出循环
-        if removed_count == 0:
-            break
-
-    return total_removed
-
-
 def copy_file_with_progress(
     source_path: str, 
     dest_path: str,
@@ -851,13 +825,22 @@ def copy_file_with_progress(
     if not os.path.exists(dest_dir):
         os.makedirs(dest_dir)
     
+    # 写入临时文件，成功后原子重命名为目标文件，避免复制失败时残留部分内容破坏原有目标
+    temp_path = dest_path + ".sync_tmp"
+    
     for attempt in range(max_retries):
         if sys.platform == 'win32' and progress_callback:
-            result = _copy_file_win32(source_path, dest_path, progress_callback)
+            result = _copy_file_win32(source_path, temp_path, progress_callback)
         else:
-            result = _copy_file_fallback(source_path, dest_path, progress_callback, chunk_size)
+            result = _copy_file_fallback(source_path, temp_path, progress_callback, chunk_size)
         
         if result:
+            try:
+                os.replace(temp_path, dest_path)
+            except OSError as e:
+                print(f"Error replacing {temp_path} to {dest_path}: {e}")
+                _safe_remove(temp_path)
+                return False
             if sys.platform == 'win32':
                 sync_file_attributes(source_path, dest_path)
             return True
@@ -869,6 +852,8 @@ def copy_file_with_progress(
             else:
                 break
     
+    # 所有重试失败：清理临时文件，避免残留
+    _safe_remove(temp_path)
     return False
 
 

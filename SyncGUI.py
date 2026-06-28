@@ -1,5 +1,5 @@
 """
-SyncGUI - 双端双向文件同步工具
+SyncGUI - 双端文件同步工具
 
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE

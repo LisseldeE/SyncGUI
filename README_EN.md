@@ -2,7 +2,7 @@
 
 ## Project Introduction
 
-SyncGUI is a simple and efficient bidirectional file synchronization tool between two endpoints. It supports intelligent difference detection, multiple sync modes, real-time progress display, providing a smooth user experience. Built with PyQt5 architecture, Windows API efficient file copying, and MD5 hash content comparison.
+SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It supports intelligent difference detection, multiple sync modes, real-time progress display, providing a smooth user experience. Built with Pyside6 architecture, Windows API efficient file copying, and MD5 hash content comparison.
 
 ## Project Information
 
@@ -75,7 +75,7 @@ Supports one-way sync between two endpoints, with two sub-modes:
 
 ### Interface Optimization
 
-- PyQt5 GUI, simple and intuitive interface
+- PySide6 GUI, simple and intuitive interface
 - Unified popup style for intuitive operation
 - Support for viewing detailed file lists
 - Real-time progress display
@@ -149,7 +149,7 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 
 ## Technical Implementation
 
-- Python + PyQt5 GUI
+- Python + PySide6 GUI
 - Windows API for efficient file copying
 - MD5 hash content comparison
 - Progress callback throttling optimization
