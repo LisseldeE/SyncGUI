@@ -161,6 +161,26 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 
 ## Changelog
 
+### R11 (2026.6.27)
+**#01**
+- Migrated from PyQt5 to PySide6 architecture
+- Refactored interface layout and partial styles
+- Fixed display exceptions caused by interface framework switching
+- Added custom two-endpoint names feature
+- Fixed incomplete display of text and icons on language switch button
+
+**#02**
+- Removed "Sync Operation" column from bottom list
+- Optimized bottom list display
+- Fixed issue where operation queue status was not refreshed when switching sync modes
+
+**#03**
+- Fixed and optimized interface startup animation
+- Fixed 9 known issues reported by the community
+- Unified popup interface in manual selection sync mode
+- Fixed sync exception caused by switching modes during scan operations
+- Released final build of this version
+
 ### R10 (2026.6.27)
 **#01**
 - Changed config file field names: wintogo_dir → A_dir, local_dir → B_dir

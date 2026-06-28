@@ -148,6 +148,11 @@ QPushButton {
 QPushButton:hover {
     border: 1px solid #adb5bd;
 }
+QPushButton#browseBtn:disabled {
+    background-color: #2d2d2d;
+    color: #adb5bd;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
 QPushButton#scanBtn {
     background-color: #339af0;
     color: white;
@@ -157,7 +162,9 @@ QPushButton#scanBtn:hover {
     background-color: #228be6;
 }
 QPushButton#scanBtn:disabled {
-    background-color: #adb5bd;
+    background-color: #2d2d2d;
+    color: #adb5bd;
+    border: 1px solid rgba(255, 255, 255, 0.2);
 }
 QPushButton#aboutBtn {
     color: #339af0;
@@ -172,6 +179,16 @@ QPushButton#aboutBtn:hover {
     color: #228be6;
     border: 1px solid #adb5bd;
 }
+QPushButton#aboutBtn:disabled {
+    background-color: #2d2d2d;
+    color: #adb5bd;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+QPushButton:disabled {
+    background-color: #2d2d2d;
+    color: #adb5bd;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
 QPushButton#syncBtn {
     background-color: #51cf66;
     color: white;
@@ -181,7 +198,9 @@ QPushButton#syncBtn:hover {
     background-color: #40c057;
 }
 QPushButton#syncBtn:disabled {
-    background-color: #adb5bd;
+    background-color: #2d2d2d;
+    color: #adb5bd;
+    border: 1px solid rgba(255, 255, 255, 0.2);
 }
 QProgressBar {
     border: none;
@@ -462,12 +481,15 @@ class FadeDialog(QDialog):
     通过在 show 时淡入、done 时淡出（局部事件循环等待动画完成），
     使连续弹窗过渡更平滑。
     """
-    _FADE_DURATION = 100  # 毫秒，单次淡入或淡出时长
+    _FADE_DURATION = 200  # 毫秒，与 MainWindow 启动动画一致
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fade_anim = None
         self._closing = False
+        # 强制创建原生窗口句柄（HWND），确保 setWindowOpacity 在窗口
+        # 显示前生效，避免 Win32 先将窗口以白底闪现一帧再变透明
+        self.winId()
         # 初始透明，待 showEvent 触发淡入
         self.setWindowOpacity(0.0)
 
@@ -539,16 +561,176 @@ class DiffPage(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
         layout.setContentsMargins(28, 16, 28, 12)
 
         status = self.diff.status
+
+        # ---- Full-width title ----
+        self._build_title(layout, status)
+
+        layout.addWidget(self._hline())
+
+        # ---- Content area: left (info) | right (options) ----
+        content = QHBoxLayout()
+        content.setSpacing(20)
+
+        # == Left: Info panel (file path / time boxes / hints) ==
+        info_panel = QVBoxLayout()
+        info_panel.setSpacing(10)
+        self._build_info_side(info_panel, status)
+
+        # == Vertical separator ==
+        vline = QFrame()
+        vline.setFrameShape(QFrame.VLine)
+        vline.setFixedWidth(1)
+        vline.setStyleSheet(f"QFrame {{ background-color: {self._hline_color()}; border: none; }}")
+
+        # == Right: Options panel (choice label / radio buttons / apply checkbox) ==
+        options_panel = QVBoxLayout()
+        options_panel.setSpacing(8)
+        self._build_options_side(options_panel, status)
+
+        content.addLayout(info_panel, 3)
+        content.addWidget(vline)
+        content.addLayout(options_panel, 2)
+
+        layout.addLayout(content)
+
+    def _build_title(self, layout, status):
+        """构建全宽标题。"""
         if status == FileStatus.CONFLICT:
-            self._build_conflict(layout)
+            self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
+            title = QLabel(I18n.tr("conflict_title", self.lang))
+            title.setStyleSheet("font-size: 18px; font-weight: bold; color: #e03131;")
+            title.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title)
         elif status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY):
-            self._build_only_one_side(layout)
+            is_wintogo_only = status == FileStatus.WINTOGO_ONLY
+            side_name = I18n.tr("removable_time", self.lang) if is_wintogo_only else I18n.tr("local_time", self.lang)
+            title = QLabel(I18n.tr("diff_title", self.lang) + f" ({side_name})")
+            title.setStyleSheet("font-size: 18px; font-weight: bold; color: #1971c2;")
+            title.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title)
         elif status == FileStatus.MTIME_DIFF:
-            self._build_mtime_diff(layout)
+            self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
+            title = QLabel(I18n.tr("mtime_title", self.lang))
+            title.setStyleSheet("font-size: 18px; font-weight: bold; color: #fd7e14;")
+            title.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title)
+
+    def _build_info_side(self, panel, status):
+        """左侧信息区域：文件路径 / 时间对比 / 提示。"""
+        panel.addWidget(self._file_label())
+
+        if status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
+            panel.addWidget(self._time_boxes())
+
+            if status == FileStatus.MTIME_DIFF:
+                hint_text = (self.lang == "zh" and "文件大小相同，但修改时间不同"
+                             or "Same size, but different modification time")
+                hint0 = QLabel(hint_text)
+                hint0.setStyleSheet(f"color: {self._hint_color()}; font-size: 12px;")
+                hint0.setAlignment(Qt.AlignCenter)
+                panel.addWidget(hint0)
+
+            newer_side = (I18n.tr("removable_time", self.lang)
+                          if self.wintogo_newer else I18n.tr("local_time", self.lang))
+            hint = QLabel(I18n.tr("newer_hint", self.lang, side=newer_side))
+            hint.setStyleSheet("color: #fd7e14; font-size: 13px;")
+            hint.setAlignment(Qt.AlignCenter)
+            panel.addWidget(hint)
+
+        else:  # WINTOGO_ONLY / LOCAL_ONLY
+            is_wintogo_only = status == FileStatus.WINTOGO_ONLY
+            info = self.diff.wintogo_info if is_wintogo_only else self.diff.local_info
+            if info:
+                size_str = self._format_size(info.size)
+                mtime_str = datetime.fromtimestamp(info.mtime).strftime('%Y-%m-%d %H:%M:%S')
+                size_text = self.lang == "zh" and "大小" or "Size"
+                mtime_text = self.lang == "zh" and "修改时间" or "Modified"
+                info_lbl = QLabel(f"{size_text}: {size_str}  |  {mtime_text}: {mtime_str}")
+                info_lbl.setStyleSheet(f"color: {self._hint_color()}; font-size: 12px;")
+                info_lbl.setAlignment(Qt.AlignCenter)
+                panel.addWidget(info_lbl)
+
+        panel.addStretch()
+
+    def _build_options_side(self, panel, status):
+        """右侧操作区域：选择标签 / 单选按钮 / 应用到同目录。"""
+        panel.addWidget(self._choice_label())
+
+        self.button_group = QButtonGroup(self)
+
+        if status in (FileStatus.CONFLICT, FileStatus.MTIME_DIFF):
+            newer_side = (I18n.tr("removable_time", self.lang)
+                          if self.wintogo_newer else I18n.tr("local_time", self.lang))
+            older_side = (I18n.tr("local_time", self.lang)
+                          if self.wintogo_newer else I18n.tr("removable_time", self.lang))
+
+            if status == FileStatus.CONFLICT:
+                self.rb_newer = QRadioButton(I18n.tr("keep_newest", self.lang, side=newer_side))
+                self.rb_older = QRadioButton(I18n.tr("keep_older", self.lang, side=older_side))
+            else:
+                newer_text = (self.lang == "zh"
+                              and f"✨ 用{newer_side}（较新）覆盖{older_side}"
+                              or f"✨ Use {newer_side} (newer) to overwrite")
+                older_text = (self.lang == "zh"
+                              and f"📥 用{older_side}（较旧）覆盖{newer_side}"
+                              or f"📥 Use {older_side} (older) to overwrite")
+                self.rb_newer = QRadioButton(newer_text)
+                self.rb_older = QRadioButton(older_text)
+
+            self.rb_delete_both = QRadioButton(
+                self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
+            self.rb_newer.setChecked(True)
+
+            self.button_group.addButton(self.rb_newer, 0)
+            self.button_group.addButton(self.rb_older, 1)
+            self.button_group.addButton(self.rb_delete_both, 2)
+            for rb in (self.rb_newer, self.rb_older, self.rb_delete_both):
+                panel.addWidget(rb)
+
+        else:  # WINTOGO_ONLY / LOCAL_ONLY
+            is_wintogo_only = status == FileStatus.WINTOGO_ONLY
+            side_name = (I18n.tr("removable_time", self.lang)
+                         if is_wintogo_only else I18n.tr("local_time", self.lang))
+
+            # 名称前缀裁剪
+            removable_prefix = self.removable_name
+            if removable_prefix.endswith("目录"):
+                removable_prefix = removable_prefix[:-2]
+            elif removable_prefix.endswith("Directory"):
+                removable_prefix = removable_prefix[:-9]
+            local_prefix = self.local_name
+            if local_prefix.endswith("目录"):
+                local_prefix = local_prefix[:-2]
+            elif local_prefix.endswith("Directory"):
+                local_prefix = local_prefix[:-9]
+
+            if is_wintogo_only:
+                copy_text = (self.lang == "zh"
+                             and f"➡️ {removable_prefix} → {local_prefix}（补充{local_prefix}缺失的文件）"
+                             or f"➡️ {removable_prefix} → {local_prefix}")
+            else:
+                copy_text = (self.lang == "zh"
+                             and f"➡️ {local_prefix} → {removable_prefix}（补充{removable_prefix}缺失的文件）"
+                             or f"➡️ {local_prefix} → {removable_prefix}")
+
+            delete_text = (self.lang == "zh"
+                           and f"🗑️ 删除此文件（移除{side_name}多余的文件）"
+                           or "🗑️ Delete this file")
+            self.rb_copy = QRadioButton(copy_text)
+            self.rb_delete = QRadioButton(delete_text)
+            self.rb_copy.setChecked(True)
+
+            self.button_group.addButton(self.rb_copy, 0)
+            self.button_group.addButton(self.rb_delete, 1)
+            for rb in (self.rb_copy, self.rb_delete):
+                panel.addWidget(rb)
+
+        self._add_apply_dir_check(panel)
+        panel.addStretch()
 
     def _hline(self):
         line = QFrame()
@@ -558,7 +740,7 @@ class DiffPage(QWidget):
 
     def _file_label(self):
         lbl = QLabel(I18n.tr("file_label", self.lang, path=self.diff.relative_path))
-        lbl.setStyleSheet(f"font-size: 13px; padding: 6px 0; border: none;")
+        lbl.setStyleSheet(f"font-size: 13px; padding: 8px 4px; border: none;")
         lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lbl.setWordWrap(True)
         return lbl
@@ -577,9 +759,10 @@ class DiffPage(QWidget):
         muted = self._muted_color()
 
         w_box = QFrame()
-        w_box.setStyleSheet(f"QFrame {{ border-radius: 8px; padding: 8px; border: 1px solid {border}; }}")
+        w_box.setStyleSheet(f"QFrame {{ border: none; padding: 6px 0; }}")
         w_lay = QVBoxLayout(w_box)
         w_lay.setSpacing(2)
+        w_lay.setContentsMargins(0, 0, 0, 0)
         w_title = QLabel(I18n.tr("removable_time", self.lang))
         w_title.setStyleSheet("font-weight: bold; color: #1971c2; font-size: 13px;")
         w_title.setAlignment(Qt.AlignCenter)
@@ -590,7 +773,7 @@ class DiffPage(QWidget):
         w_lay.addWidget(w_time_lbl)
 
         l_box = QFrame()
-        l_box.setStyleSheet(f"QFrame {{ border-radius: 8px; padding: 8px; border: 1px solid {border}; }}")
+        l_box.setStyleSheet(f"QFrame {{ border: none; padding: 6px 0; }}")
         l_lay = QVBoxLayout(l_box)
         l_lay.setSpacing(2)
         l_title = QLabel(I18n.tr("local_time", self.lang))
@@ -618,148 +801,8 @@ class DiffPage(QWidget):
             self.apply_dir_check.setChecked(True)
             layout.addWidget(self.apply_dir_check)
 
-    def _build_conflict(self, layout):
-        self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
-
-        title = QLabel(I18n.tr("conflict_title", self.lang))
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #e03131;")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-        layout.addWidget(self._hline())
-        layout.addWidget(self._file_label())
-        layout.addWidget(self._time_boxes())
-
-        newer_side = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
-        hint = QLabel(I18n.tr("newer_hint", self.lang, side=newer_side))
-        hint.setStyleSheet("color: #fd7e14; font-size: 13px;")
-        hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint)
-        layout.addWidget(self._hline())
-        layout.addWidget(self._choice_label())
-
-        self.button_group = QButtonGroup(self)
-        older_side = I18n.tr("local_time", self.lang) if self.wintogo_newer else I18n.tr("removable_time", self.lang)
-
-        self.rb_newer = QRadioButton(I18n.tr("keep_newest", self.lang, side=newer_side))
-        self.rb_older = QRadioButton(I18n.tr("keep_older", self.lang, side=older_side))
-        self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
-        self.rb_skip = QRadioButton(I18n.tr("skip_file", self.lang))
-        self.rb_newer.setChecked(True)
-
-        self.button_group.addButton(self.rb_newer, 0)
-        self.button_group.addButton(self.rb_older, 1)
-        self.button_group.addButton(self.rb_delete_both, 2)
-        self.button_group.addButton(self.rb_skip, 3)
-        for rb in (self.rb_newer, self.rb_older, self.rb_delete_both, self.rb_skip):
-            layout.addWidget(rb)
-
-        self._add_apply_dir_check(layout)
-        layout.addStretch()
-
-    def _build_only_one_side(self, layout):
-        is_wintogo_only = self.diff.status == FileStatus.WINTOGO_ONLY
-        side_name = I18n.tr("removable_time", self.lang) if is_wintogo_only else I18n.tr("local_time", self.lang)
-
-        title = QLabel(I18n.tr("diff_title", self.lang) + f" ({side_name})")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #1971c2;")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-        layout.addWidget(self._hline())
-        layout.addWidget(self._file_label())
-
-        info = self.diff.wintogo_info if is_wintogo_only else self.diff.local_info
-        if info:
-            size_str = self._format_size(info.size)
-            mtime_str = datetime.fromtimestamp(info.mtime).strftime('%Y-%m-%d %H:%M:%S')
-            size_text = self.lang == "zh" and "大小" or "Size"
-            mtime_text = self.lang == "zh" and "修改时间" or "Modified"
-            info_lbl = QLabel(f"{size_text}: {size_str}  |  {mtime_text}: {mtime_str}")
-            info_lbl.setStyleSheet(f"color: {self._hint_color()}; font-size: 12px;")
-            info_lbl.setAlignment(Qt.AlignCenter)
-            layout.addWidget(info_lbl)
-
-        layout.addWidget(self._hline())
-        layout.addWidget(self._choice_label())
-
-        self.button_group = QButtonGroup(self)
-
-        # 名称前缀裁剪
-        removable_prefix = self.removable_name
-        if removable_prefix.endswith("目录"):
-            removable_prefix = removable_prefix[:-2]
-        elif removable_prefix.endswith("Directory"):
-            removable_prefix = removable_prefix[:-9]
-        local_prefix = self.local_name
-        if local_prefix.endswith("目录"):
-            local_prefix = local_prefix[:-2]
-        elif local_prefix.endswith("Directory"):
-            local_prefix = local_prefix[:-9]
-
-        if is_wintogo_only:
-            copy_text = self.lang == "zh" and f"➡️ {removable_prefix} → {local_prefix}（补充{local_prefix}缺失的文件）" or f"➡️ {removable_prefix} → {local_prefix}"
-        else:
-            copy_text = self.lang == "zh" and f"➡️ {local_prefix} → {removable_prefix}（补充{removable_prefix}缺失的文件）" or f"➡️ {local_prefix} → {removable_prefix}"
-
-        delete_text = self.lang == "zh" and f"🗑️ 删除此文件（移除{side_name}多余的文件）" or f"🗑️ Delete this file"
-        self.rb_copy = QRadioButton(copy_text)
-        self.rb_delete = QRadioButton(delete_text)
-        self.rb_skip = QRadioButton(I18n.tr("skip_file", self.lang))
-        self.rb_copy.setChecked(True)
-
-        self.button_group.addButton(self.rb_copy, 0)
-        self.button_group.addButton(self.rb_delete, 1)
-        self.button_group.addButton(self.rb_skip, 2)
-        for rb in (self.rb_copy, self.rb_delete, self.rb_skip):
-            layout.addWidget(rb)
-
-        self._add_apply_dir_check(layout)
-        layout.addStretch()
-
-    def _build_mtime_diff(self, layout):
-        self.wintogo_newer = self.diff.wintogo_info.mtime > self.diff.local_info.mtime
-
-        title = QLabel(I18n.tr("mtime_title", self.lang))
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #fd7e14;")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-
-        hint_text = self.lang == "zh" and "文件大小相同，但修改时间不同" or "Same size, but different modification time"
-        hint0 = QLabel(hint_text)
-        hint0.setStyleSheet(f"color: {self._hint_color()}; font-size: 12px;")
-        hint0.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint0)
-        layout.addWidget(self._hline())
-        layout.addWidget(self._file_label())
-        layout.addWidget(self._time_boxes())
-
-        newer_side = I18n.tr("removable_time", self.lang) if self.wintogo_newer else I18n.tr("local_time", self.lang)
-        hint2 = QLabel(I18n.tr("newer_hint", self.lang, side=newer_side))
-        hint2.setStyleSheet("color: #fd7e14; font-size: 13px;")
-        hint2.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint2)
-        layout.addWidget(self._hline())
-        layout.addWidget(self._choice_label())
-
-        self.button_group = QButtonGroup(self)
-        older_side = I18n.tr("local_time", self.lang) if self.wintogo_newer else I18n.tr("removable_time", self.lang)
-
-        newer_text = self.lang == "zh" and f"✨ 用{newer_side}（较新）覆盖{older_side}" or f"✨ Use {newer_side} (newer) to overwrite"
-        older_text = self.lang == "zh" and f"📥 用{older_side}（较旧）覆盖{newer_side}" or f"📥 Use {older_side} (older) to overwrite"
-        self.rb_newer = QRadioButton(newer_text)
-        self.rb_older = QRadioButton(older_text)
-        self.rb_delete_both = QRadioButton(self.lang == "zh" and "🗑️ 双端删除此项目" or "🗑️ Delete from both sides")
-        self.rb_skip = QRadioButton(self.lang == "zh" and "⏭️ 跳过（保持现状）" or "⏭️ Skip (keep current)")
-        self.rb_newer.setChecked(True)
-
-        self.button_group.addButton(self.rb_newer, 0)
-        self.button_group.addButton(self.rb_older, 1)
-        self.button_group.addButton(self.rb_delete_both, 2)
-        self.button_group.addButton(self.rb_skip, 3)
-        for rb in (self.rb_newer, self.rb_older, self.rb_delete_both, self.rb_skip):
-            layout.addWidget(rb)
-
-        self._add_apply_dir_check(layout)
-        layout.addStretch()
+    # _build_conflict / _build_only_one_side / _build_mtime_diff 已被
+    # _build_title + _build_info_side + _build_options_side 取代
 
     # ---- 结果获取 ----
 
@@ -798,7 +841,7 @@ class DiffPage(QWidget):
         return False
 
 
-class ManualSyncWizard(QDialog):
+class ManualSyncWizard(FadeDialog):
     """手动选择模式翻页式向导。
 
     固定窗口，内容区由右向左滑动切换，底部按钮固定。
@@ -809,6 +852,10 @@ class ManualSyncWizard(QDialog):
     SLIDE_DURATION = 200  # 毫秒
 
     def __init__(self, diffs, same_dir_counts, lang, removable_name, local_name, parent=None):
+        # 在 super().__init__ 前预初始化，因为 FadeDialog.__init__ 调用 winId()
+        # 会触发首次 resizeEvent，此时 _current_page / _sliding 必须已存在
+        self._current_page = None
+        self._sliding = False
         super().__init__(parent)
         self.lang = lang
         self.removable_name = removable_name
@@ -818,8 +865,6 @@ class ManualSyncWizard(QDialog):
         self.decisions = {}          # {relative_path: direction}
         self.cancel_sync = False
         self.current_index = 0
-        self._current_page = None
-        self._sliding = False
         self._dark = _is_dark_mode()
 
         self.setWindowTitle(I18n.tr("wizard_title", lang))
@@ -849,7 +894,7 @@ class ManualSyncWizard(QDialog):
             QFrame#header {{ background-color: {base_bg}; border-bottom: 1px solid {border_color}; }}
             QFrame#footer {{ background-color: {base_bg}; border-top: 1px solid {border_color}; }}
             QLabel {{ color: {base_text}; }}
-            QRadioButton {{ padding: 6px 10px; font-size: 13px; color: {base_text}; }}
+            QRadioButton {{ padding: 8px 12px; font-size: 13px; color: {base_text}; }}
             QRadioButton::indicator {{ width: 18px; height: 18px; border-radius: 9px; border: 2px solid {btn_border}; }}
             QRadioButton::indicator:hover {{ border: 2px solid {btn_border_hover}; }}
             QRadioButton::indicator:checked {{ border: 2px solid #2f9e44; background-color: #2f9e44; }}
@@ -870,6 +915,12 @@ class ManualSyncWizard(QDialog):
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
 
+        # ---- 内容容器（弹出动画目标）----
+        self._content_container = QWidget()
+        container_lay = QVBoxLayout(self._content_container)
+        container_lay.setSpacing(0)
+        container_lay.setContentsMargins(0, 0, 0, 0)
+
         # ---- 顶部进度条 ----
         header = QFrame()
         header.setObjectName("header")
@@ -879,12 +930,12 @@ class ManualSyncWizard(QDialog):
         self.progress_label.setStyleSheet(f"font-size: 13px; color: {self._text_muted}; font-weight: 500;")
         h_lay.addWidget(self.progress_label)
         h_lay.addStretch()
-        root.addWidget(header)
+        container_lay.addWidget(header)
 
         # ---- 内容滑动区（无 layout，手动管理页面 pos 以实现滑动）----
         self.slide_host = QWidget()
         self.slide_host.setObjectName("slideHost")
-        root.addWidget(self.slide_host, 1)
+        container_lay.addWidget(self.slide_host, 1)
 
         # ---- 底部固定按钮区 ----
         footer = QFrame()
@@ -932,9 +983,12 @@ class ManualSyncWizard(QDialog):
         f_lay.addWidget(self.confirm_btn)
         f_lay.addSpacing(8)
         f_lay.addWidget(self.skip_btn)
-        f_lay.addStretch()
+        f_lay.addSpacing(8)
         f_lay.addWidget(self.cancel_sync_btn)
-        root.addWidget(footer)
+        container_lay.addWidget(footer)
+
+        # 将内容容器加入根布局
+        root.addWidget(self._content_container, 1)
 
     # ---- 页面切换（滑动）----
 
@@ -973,6 +1027,7 @@ class ManualSyncWizard(QDialog):
                 old_page.deleteLater()
                 self._current_page = new_page
                 self._sliding = False
+                self._update_ui_state()
 
             anim_old.finished.connect(_on_finished)
             anim_old.start()
@@ -1855,7 +1910,7 @@ class MtimeDiffDialog(FadeDialog):
         return False
 
 
-class IgnoreRulesDialog(QDialog):
+class IgnoreRulesDialog(FadeDialog):
     def __init__(self, rules, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
@@ -2379,7 +2434,71 @@ class DirSyncDialog(FadeDialog):
         detail_dialog.exec()
 
 
-class SyncRulesDialog(QDialog):
+class ConfirmSyncDialog(FadeDialog):
+    """带淡入动画的同步确认弹窗，替代 QMessageBox。"""
+
+    def __init__(self, title, message, lang, parent=None):
+        super().__init__(parent)
+        self._confirmed = False
+        self.setWindowTitle(title)
+        self.setMinimumWidth(420)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 20, 24, 20)
+
+        # 内容容器
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(16)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 图标 + 消息
+        msg_label = QLabel(f"❓ {message}")
+        msg_label.setWordWrap(True)
+        msg_label.setStyleSheet("font-size: 13px; line-height: 1.6;")
+        content_layout.addWidget(msg_label)
+
+        content_layout.addStretch()
+
+        # 按钮
+        btn_lay = QHBoxLayout()
+        btn_lay.addStretch()
+
+        self.cancel_btn = QPushButton(lang == "zh" and "取消" or "Cancel")
+        self.cancel_btn.setMinimumSize(90, 36)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton { border: 1px solid #ced4da; border-radius: 6px; padding: 8px 24px; font-size: 13px; }
+            QPushButton:hover { border: 1px solid #adb5bd; }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+
+        self.confirm_btn = QPushButton(lang == "zh" and "确定" or "Confirm")
+        self.confirm_btn.setMinimumSize(90, 36)
+        self.confirm_btn.setStyleSheet("""
+            QPushButton { background-color: #40c057; color: white; border: none; border-radius: 6px; padding: 8px 24px; font-size: 13px; font-weight: 500; }
+            QPushButton:hover { background-color: #37b24d; }
+            QPushButton:pressed { background-color: #2f9e44; }
+        """)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+
+        btn_lay.addWidget(self.confirm_btn)
+        btn_lay.addSpacing(8)
+        btn_lay.addWidget(self.cancel_btn)
+        content_layout.addLayout(btn_lay)
+
+        layout.addWidget(content)
+
+    def _on_confirm(self):
+        self._confirmed = True
+        self.accept()
+
+    def is_confirmed(self):
+        return self._confirmed
+
+
+class SyncRulesDialog(FadeDialog):
     def __init__(self, rules, lang: str = "zh", parent=None):
         super().__init__(parent)
         self.lang = lang
@@ -2539,7 +2658,7 @@ class SyncRulesDialog(QDialog):
         return self.rules
 
 
-class RenameDialog(QDialog):
+class RenameDialog(FadeDialog):
     """修改目录名称对话框"""
     def __init__(self, old_name: str, lang: str = "zh", parent=None):
         super().__init__(parent)
@@ -2684,7 +2803,7 @@ class RenameDialog(QDialog):
         return text
 
 
-class AboutDialog(QDialog):
+class AboutDialog(FadeDialog):
     """关于弹窗"""
     def __init__(self, lang='zh', parent=None):
         super().__init__(parent)
@@ -3010,6 +3129,14 @@ class MainWindow(QMainWindow):
         self.sync_transferred_bytes = 0
         self._delete_both_dirs = set()
         
+        # 首次显示标记，用于淡入动画只执行一次
+        self._first_show = True
+        
+        # 强制创建原生窗口句柄，预先设置透明度为 0，
+        # 避免 Win32 先以白色背景映射窗口再变透明导致闪烁
+        self.winId()
+        self.setWindowOpacity(0.0)
+        
         self._init_ui()
         self._load_saved_paths()
         # 初始化按钮状态
@@ -3019,6 +3146,32 @@ class MainWindow(QMainWindow):
         self._update_buttons_visibility()
         # 初始化头部箭头显示（根据同步类型和方向动态显示）
         self._update_header_status()
+    
+    def showEvent(self, event):
+        """首次显示时淡入，避免白色闪烁。"""
+        super().showEvent(event)
+        if not self._first_show:
+            return
+        self._first_show = False
+        
+        from PySide6.QtCore import QPropertyAnimation
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
+        anim.setDuration(200)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.start()
+        self._window_fade_anim = anim  # 防止被GC
+
+        # 窗口显示后焦点可能落在路径框并自动全选文字，
+        # 延迟到事件循环取消选中，避免初次启动路径框文字被高亮
+        QTimer.singleShot(0, self._deselect_path_edits)
+
+    def _deselect_path_edits(self):
+        """取消路径输入框的选中态，并清除焦点。"""
+        self.wintogo_edit.deselect()
+        self.local_edit.deselect()
+        # 把焦点转移到窗口本身，避免输入框保留焦点
+        self.setFocus()
     
     def _init_ui(self):
         central_widget = QWidget()
@@ -3049,6 +3202,11 @@ class MainWindow(QMainWindow):
             }
             QPushButton:hover {
                 border: 1px solid #adb5bd;
+            }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                color: #adb5bd;
+                border: 1px solid rgba(255, 255, 255, 0.2);
             }
         """)
         self.lang_btn.clicked.connect(self._toggle_language)
@@ -3397,7 +3555,29 @@ QHeaderView::section:last {{
             if os.path.exists(wintogo_dir) and os.path.exists(local_dir):
                 # 自动触发扫描
                 self._start_scan()
-    
+
+    # ---- 扫描/同步期间统一禁用/恢复所有功能按钮 ----
+    # 与 scan_btn / sync_btn 的 setEnabled(False) 灰色效果一致，
+    # 避免扫描中切换模式导致状态与 diff_results 脱节
+    def _get_feature_buttons(self):
+        """返回所有功能按钮（不含扫描/同步按钮本身，二者已单独管理）。"""
+        return [
+            self.sync_type_btn,
+            self.mode_btn,
+            self.unidirectional_mode_btn,
+            self.direction_btn,
+            self.extra_items_btn,
+            self.ignore_btn,
+            self.sync_rule_btn,
+            self.lang_btn,
+            self.about_btn,
+        ]
+
+    def _set_feature_buttons_enabled(self, enabled: bool):
+        """统一禁用/恢复功能按钮。"""
+        for btn in self._get_feature_buttons():
+            btn.setEnabled(enabled)
+
     def _inactive_btn_style(self) -> str:
         """非激活态按钮 QSS：深色模式下使用深灰背景，避免在深色窗口中显为突兀的白块"""
         if _is_dark_mode():
@@ -3412,6 +3592,11 @@ QHeaderView::section:last {{
                     background-color: #383838;
                     border: 1px solid rgba(255, 255, 255, 0.7);
                 }
+                QPushButton:disabled {
+                    background-color: #2d2d2d;
+                    color: #adb5bd;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
             """
         return """
             QPushButton {
@@ -3422,6 +3607,11 @@ QHeaderView::section:last {{
             }
             QPushButton:hover {
                 background-color: #dee2e6;
+            }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                color: #adb5bd;
+                border: 1px solid rgba(255, 255, 255, 0.2);
             }
         """
 
@@ -3439,10 +3629,17 @@ QHeaderView::section:last {{
                 QPushButton:hover {
                     background-color: #228be6;
                 }
+                QPushButton:disabled {
+                    background-color: #2d2d2d;
+                    color: #adb5bd;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
             """)
         else:
             self.sync_type_btn.setText(I18n.tr("sync_type_bidirectional", self.current_lang))
-            self.sync_type_btn.setStyleSheet(self._inactive_btn_style())
+            # 双向同步模式：使用忽略规则/同步规则按钮的全局 browseBtn 样式（灰边框无背景）
+            # 不设置内联样式，让全局 STYLESHEET 的 QPushButton + #browseBtn:disabled 规则生效
+            self.sync_type_btn.setStyleSheet("")
         self.sync_type_btn.adjustSize()
     
     def _toggle_unidirectional_mode(self):
@@ -3470,6 +3667,11 @@ QHeaderView::section:last {{
                 }
                 QPushButton:hover {
                     background-color: #e03131;
+                }
+                QPushButton:disabled {
+                    background-color: #2d2d2d;
+                    color: #adb5bd;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
                 }
             """)
         else:
@@ -3503,6 +3705,11 @@ QHeaderView::section:last {{
                 QPushButton:hover {
                     background-color: #e03131;
                 }
+                QPushButton:disabled {
+                    background-color: #2d2d2d;
+                    color: #adb5bd;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
             """)
         else:
             self.extra_items_btn.setText(I18n.tr("extra_items_keep", self.current_lang))
@@ -3515,6 +3722,11 @@ QHeaderView::section:last {{
                 }
                 QPushButton:hover {
                     background-color: #238636;
+                }
+                QPushButton:disabled {
+                    background-color: #2d2d2d;
+                    color: #adb5bd;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
                 }
             """)
         self.extra_items_btn.adjustSize()
@@ -3723,12 +3935,19 @@ QHeaderView::section:last {{
                 QPushButton:hover {
                     background-color: #228be6;
                 }
+                QPushButton:disabled {
+                    background-color: #2d2d2d;
+                    color: #adb5bd;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
             """)
             # 最新优先模式下隐藏同步规则按钮（不使用同步规则）
             self._fade_widget(self.sync_rule_btn, False)
         else:
             self.mode_btn.setText(I18n.tr("mode_default", self.current_lang))
-            self.mode_btn.setStyleSheet(self._inactive_btn_style())
+            # 默认模式（手动选择）：使用忽略规则/同步规则按钮的全局 browseBtn 样式（灰边框无背景）
+            # 不设置内联样式，让全局 STYLESHEET 的 QPushButton + #browseBtn:disabled 规则生效
+            self.mode_btn.setStyleSheet("")
             # 默认模式下显示同步规则按钮（仅在双向模式下）
             if self.sync_type == "bidirectional":
                 self._fade_widget(self.sync_rule_btn, True)
@@ -3909,6 +4128,7 @@ QHeaderView::section:last {{
 
         self.scan_btn.setEnabled(False)
         self.sync_btn.setEnabled(False)
+        self._set_feature_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("扫描中... %p%")
@@ -3955,6 +4175,7 @@ QHeaderView::section:last {{
 
         self.progress_bar.setVisible(False)
         self.scan_btn.setEnabled(True)
+        self._set_feature_buttons_enabled(True)
 
         only_one_side = [r for r in results if r.status in (FileStatus.WINTOGO_ONLY, FileStatus.LOCAL_ONLY)]
         conflicts = [r for r in results if r.status == FileStatus.CONFLICT]
@@ -4339,18 +4560,9 @@ QHeaderView::section:last {{
             msg += f"⏭️ 跳过: {skip_count} 个\n"
         msg += "\n此操作不可撤销！"
         
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("确认同步")
-        msg_box.setText(msg)
-        msg_box.setIcon(QMessageBox.Question)
-        
-        confirm_btn = msg_box.addButton("确定", QMessageBox.YesRole)
-        cancel_btn = msg_box.addButton("取消", QMessageBox.NoRole)
-        msg_box.setDefaultButton(cancel_btn)
-        
-        msg_box.exec()
-        
-        if msg_box.clickedButton() != confirm_btn:
+        dialog = ConfirmSyncDialog("确认同步", msg, self.current_lang, self)
+        dialog.exec()
+        if not dialog.is_confirmed():
             # 取消同步：清除已选决策并刷新表格
             self.conflict_decisions.clear()
             self._delete_both_dirs.clear()
@@ -4362,6 +4574,7 @@ QHeaderView::section:last {{
 
         self.sync_btn.setEnabled(False)
         self.scan_btn.setEnabled(False)
+        self._set_feature_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("同步中... 准备中")
@@ -4486,18 +4699,10 @@ QHeaderView::section:last {{
         
         msg += lang == "zh" and "\n此操作不可撤销！" or "\nThis operation cannot be undone!"
         
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(lang == "zh" and "确认同步" or "Confirm Sync")
-        msg_box.setText(msg)
-        msg_box.setIcon(QMessageBox.Question)
-        
-        confirm_btn = msg_box.addButton(lang == "zh" and "确定" or "Confirm", QMessageBox.YesRole)
-        cancel_btn = msg_box.addButton(lang == "zh" and "取消" or "Cancel", QMessageBox.NoRole)
-        msg_box.setDefaultButton(cancel_btn)
-        
-        msg_box.exec()
-        
-        if msg_box.clickedButton() != confirm_btn:
+        title = lang == "zh" and "确认同步" or "Confirm Sync"
+        dialog = ConfirmSyncDialog(title, msg, lang, self)
+        dialog.exec()
+        if not dialog.is_confirmed():
             # 取消同步：清除已选决策并刷新表格
             self.conflict_decisions.clear()
             self._delete_both_dirs.clear()
@@ -4510,6 +4715,7 @@ QHeaderView::section:last {{
 
         self.sync_btn.setEnabled(False)
         self.scan_btn.setEnabled(False)
+        self._set_feature_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
@@ -4602,18 +4808,10 @@ QHeaderView::section:last {{
         msg += lang == "zh" and f"{local_prefix} → {removable_prefix}: {to_wintogo_count + local_to_wintogo_count} 个\n" or f"{local_prefix} → {removable_prefix}: {to_wintogo_count + local_to_wintogo_count} files\n"
         msg += lang == "zh" and f"\n总计: {len(sync_needed)} 个文件将被同步\n\n此操作不可撤销！" or f"\nTotal: {len(sync_needed)} files will be synced\n\nThis action cannot be undone!"
         
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(lang == "zh" and "确认同步" or "Confirm Sync")
-        msg_box.setText(msg)
-        msg_box.setIcon(QMessageBox.Question)
-        
-        confirm_btn = msg_box.addButton(lang == "zh" and "确定" or "Confirm", QMessageBox.YesRole)
-        cancel_btn = msg_box.addButton(lang == "zh" and "取消" or "Cancel", QMessageBox.NoRole)
-        msg_box.setDefaultButton(cancel_btn)
-        
-        msg_box.exec()
-        
-        if msg_box.clickedButton() != confirm_btn:
+        title = lang == "zh" and "确认同步" or "Confirm Sync"
+        dialog = ConfirmSyncDialog(title, msg, lang, self)
+        dialog.exec()
+        if not dialog.is_confirmed():
             # 取消同步：清除已选决策并刷新表格
             self.conflict_decisions.clear()
             self._delete_both_dirs.clear()
@@ -4626,6 +4824,7 @@ QHeaderView::section:last {{
 
         self.sync_btn.setEnabled(False)
         self.scan_btn.setEnabled(False)
+        self._set_feature_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat(lang == "zh" and "同步中... 准备中" or "Syncing... Preparing")
@@ -4691,6 +4890,7 @@ QHeaderView::section:last {{
     def _on_sync_finished(self, success_count: int, fail_count: int, skip_count: int):
         self.progress_bar.setVisible(False)
         self.scan_btn.setEnabled(True)
+        self._set_feature_buttons_enabled(True)
 
         wintogo_dir = self.wintogo_edit.text().strip()
         local_dir = self.local_edit.text().strip()
