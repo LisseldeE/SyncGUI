@@ -2837,7 +2837,7 @@ class AboutDialog(FadeDialog):
         layout.addWidget(title_label)
         
         # 版本信息
-        version_label = QLabel(f"{I18n.tr('about_version_label', self.lang)}：{Config.APP_VERSION}")
+        version_label = QLabel(f"{I18n.tr('about_version_label', self.lang)}：{Config.DISPLAY_VERSION}")
         version_label.setStyleSheet("font-size: 13px;")
         version_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(version_label)
@@ -2970,7 +2970,7 @@ class AboutDialog(FadeDialog):
             
             # 创建请求
             req = urllib.request.Request(api_url)
-            req.add_header('User-Agent', Config.APP_NAME)
+            req.add_header('User-Agent', f"{Config.APP_NAME}/{Config.DISPLAY_VERSION}")
             
             with urllib.request.urlopen(req, timeout=10) as response:
                 data = json.loads(response.read().decode())
@@ -3089,13 +3089,13 @@ class AboutDialog(FadeDialog):
                 msg_box.exec()
         
         except urllib.error.URLError as e:
-            # 网络错误
-            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
-                               I18n.tr("update_network_error", self.lang).format(str(e)))
+            # 网络错误（HTTPError 是 URLError 子类，会被此处捕获）
+            error_msg = I18n.tr("update_network_error", self.lang).replace("{error}", str(e))
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang), error_msg)
         except Exception as e:
             # 其他错误
-            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
-                               I18n.tr("update_error", self.lang).format(str(e)))
+            error_msg = I18n.tr("update_error", self.lang).replace("{error}", str(e))
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang), error_msg)
 
 
 class MainWindow(QMainWindow):

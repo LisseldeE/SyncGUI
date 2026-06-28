@@ -19,7 +19,7 @@ from config import Config
 if sys.platform == 'win32':
     import ctypes
     # 设置应用程序ID，确保Windows任务栏正确显示图标
-    app_id = f"Lisselde_E.SyncGUI.{Config.APP_VERSION}"
+    app_id = f"Lisselde_E.SyncGUI.{Config.DISPLAY_VERSION}"
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
 
 
@@ -56,7 +56,7 @@ def main():
     
     # 设置应用程序信息（确保Windows任务栏图标正确显示）
     app.setApplicationName("SyncGUI")
-    app.setApplicationVersion(Config.APP_VERSION)
+    app.setApplicationVersion(Config.DISPLAY_VERSION)
     app.setOrganizationName("Lisselde_E")
     
     # 设置应用程序字体，启用抗锯齿
