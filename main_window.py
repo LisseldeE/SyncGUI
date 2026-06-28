@@ -112,6 +112,33 @@ def get_config_dir():
 CONFIG_FILE = os.path.join(get_config_dir(), 'config.json')
 
 
+def _is_dark_mode():
+    """自动检测 Windows 系统深色模式（参考 pyside6-AltRowStyle.md）"""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        )
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        winreg.CloseKey(key)
+        return value == 0  # 0 = 深色, 1 = 浅色
+    except Exception:
+        return False
+
+
+# 禁用态按钮样式：深色模式用深灰背景，浅色模式用老版本灰色填充
+_DISABLED_BTN_QSS = (
+    "background-color: #2d2d2d;\n"
+    "    color: #adb5bd;\n"
+    "    border: 1px solid rgba(255, 255, 255, 0.2);"
+) if _is_dark_mode() else (
+    "background-color: #adb5bd;\n"
+    "    color: #f8f9fa;\n"
+    "    border: none;"
+)
+
+
 STYLESHEET = """
 QGroupBox {
     font-weight: bold;
@@ -149,9 +176,7 @@ QPushButton:hover {
     border: 1px solid #adb5bd;
 }
 QPushButton#browseBtn:disabled {
-    background-color: #2d2d2d;
-    color: #adb5bd;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    __DISABLED__
 }
 QPushButton#scanBtn {
     background-color: #339af0;
@@ -162,9 +187,7 @@ QPushButton#scanBtn:hover {
     background-color: #228be6;
 }
 QPushButton#scanBtn:disabled {
-    background-color: #2d2d2d;
-    color: #adb5bd;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    __DISABLED__
 }
 QPushButton#aboutBtn {
     color: #339af0;
@@ -180,14 +203,10 @@ QPushButton#aboutBtn:hover {
     border: 1px solid #adb5bd;
 }
 QPushButton#aboutBtn:disabled {
-    background-color: #2d2d2d;
-    color: #adb5bd;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    __DISABLED__
 }
 QPushButton:disabled {
-    background-color: #2d2d2d;
-    color: #adb5bd;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    __DISABLED__
 }
 QPushButton#syncBtn {
     background-color: #51cf66;
@@ -198,9 +217,7 @@ QPushButton#syncBtn:hover {
     background-color: #40c057;
 }
 QPushButton#syncBtn:disabled {
-    background-color: #2d2d2d;
-    color: #adb5bd;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    __DISABLED__
 }
 QProgressBar {
     border: none;
@@ -254,22 +271,7 @@ QMessageBox QPushButton[text="No"]:hover,
 QMessageBox QPushButton[text="Cancel"]:hover {
     background-color: #f03e3e;
 }
-"""
-
-
-def _is_dark_mode():
-    """自动检测 Windows 系统深色模式（参考 pyside6-AltRowStyle.md）"""
-    try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-        )
-        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-        winreg.CloseKey(key)
-        return value == 0  # 0 = 深色, 1 = 浅色
-    except Exception:
-        return False
+""".replace("__DISABLED__", _DISABLED_BTN_QSS)
 
 
 def load_config():
@@ -3204,9 +3206,7 @@ class MainWindow(QMainWindow):
                 border: 1px solid #adb5bd;
             }
             QPushButton:disabled {
-                background-color: #2d2d2d;
-                color: #adb5bd;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                """ + self._disabled_btn_qss("                ") + """
             }
         """)
         self.lang_btn.clicked.connect(self._toggle_language)
@@ -3578,6 +3578,18 @@ QHeaderView::section:last {{
         for btn in self._get_feature_buttons():
             btn.setEnabled(enabled)
 
+    @staticmethod
+    def _disabled_btn_qss(indent: str = "                ") -> str:
+        """返回内联样式中 QPushButton:disabled 块的 QSS，根据深色/浅色模式动态选择。
+        indent: 内联样式的缩进字符串（默认 16 空格）。"""
+        if _is_dark_mode():
+            return (f"{indent}background-color: #2d2d2d;\n"
+                    f"{indent}color: #adb5bd;\n"
+                    f"{indent}border: 1px solid rgba(255, 255, 255, 0.2);")
+        return (f"{indent}background-color: #adb5bd;\n"
+                f"{indent}color: #f8f9fa;\n"
+                f"{indent}border: none;")
+
     def _inactive_btn_style(self) -> str:
         """非激活态按钮 QSS：深色模式下使用深灰背景，避免在深色窗口中显为突兀的白块"""
         if _is_dark_mode():
@@ -3609,9 +3621,9 @@ QHeaderView::section:last {{
                 background-color: #dee2e6;
             }
             QPushButton:disabled {
-                background-color: #2d2d2d;
-                color: #adb5bd;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                background-color: #adb5bd;
+                color: #f8f9fa;
+                border: none;
             }
         """
 
@@ -3630,9 +3642,7 @@ QHeaderView::section:last {{
                     background-color: #228be6;
                 }
                 QPushButton:disabled {
-                    background-color: #2d2d2d;
-                    color: #adb5bd;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    """ + self._disabled_btn_qss("                    ") + """
                 }
             """)
         else:
@@ -3669,9 +3679,7 @@ QHeaderView::section:last {{
                     background-color: #e03131;
                 }
                 QPushButton:disabled {
-                    background-color: #2d2d2d;
-                    color: #adb5bd;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    """ + self._disabled_btn_qss("                    ") + """
                 }
             """)
         else:
@@ -3706,9 +3714,7 @@ QHeaderView::section:last {{
                     background-color: #e03131;
                 }
                 QPushButton:disabled {
-                    background-color: #2d2d2d;
-                    color: #adb5bd;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    """ + self._disabled_btn_qss("                    ") + """
                 }
             """)
         else:
@@ -3724,9 +3730,7 @@ QHeaderView::section:last {{
                     background-color: #238636;
                 }
                 QPushButton:disabled {
-                    background-color: #2d2d2d;
-                    color: #adb5bd;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    """ + self._disabled_btn_qss("                    ") + """
                 }
             """)
         self.extra_items_btn.adjustSize()
@@ -3936,9 +3940,7 @@ QHeaderView::section:last {{
                     background-color: #228be6;
                 }
                 QPushButton:disabled {
-                    background-color: #2d2d2d;
-                    color: #adb5bd;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    """ + self._disabled_btn_qss("                    ") + """
                 }
             """)
             # 最新优先模式下隐藏同步规则按钮（不使用同步规则）
