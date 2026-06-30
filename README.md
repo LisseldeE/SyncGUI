@@ -13,6 +13,9 @@ SyncGUI 是一款简洁高效的双端文件同步工具。支持智能差异检
 - **项目仓库**: https://github.com/LisseldeE/SyncGUI
 
 ## 下载
+<a href="https://apps.microsoft.com/detail/9ncs5fmkwq6l?referrer=appbadge&mode=full" target="_blank"  rel="noopener noreferrer">
+	<img src="https://get.microsoft.com/images/zh-cn%20dark.svg" width="200"/>
+</a>
 
 - **GitHub Releases**: https://github.com/LisseldeE/SyncGUI/releases
 - **Gitee 镜像下载**: https://gitee.com/Lisselde_E/SyncGUI/releases （推荐国内用户使用）
@@ -179,6 +182,8 @@ SyncGUI 是一款简洁高效的双端文件同步工具。支持智能差异检
 - 手动选择同步模式下，统一了弹窗界面
 - 修复了扫描等操作时可以切换模式导致同步异常的错误
 - 发布了此版本最终构建
+
+详见：https://github.com/LisseldeE/SyncGUI/blob/main/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.log
 
 ## 开源声明
 

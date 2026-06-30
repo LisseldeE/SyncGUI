@@ -13,6 +13,9 @@ SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It su
 - **Project Repository**: https://github.com/LisseldeE/SyncGUI
 
 ## Download
+<a href="https://apps.microsoft.com/detail/9ncs5fmkwq6l?referrer=appbadge&mode=full" target="_blank"  rel="noopener noreferrer">
+	<img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
+</a>
 
 - **GitHub Releases**: https://github.com/LisseldeE/SyncGUI/releases
 - **Gitee Mirror Download**: https://gitee.com/Lisselde_E/SyncGUI/releases (Recommended for users in China)
@@ -179,6 +182,8 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Unified popup interface in manual selection sync mode
 - Fixed sync exception caused by switching modes during scan operations
 - Released final build of this version
+
+See：https://github.com/LisseldeE/SyncGUI/blob/main/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.log
 
 ## Open Source Declaration
 
