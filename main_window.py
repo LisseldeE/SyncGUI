@@ -94,10 +94,9 @@ class ClickableLabel(QLabel):
 
 
 def get_config_dir():
-    """获取配置文件保存目录（AppData/SyncGUI）"""
-    # 获取用户AppData目录
-    app_data = os.environ.get('APPDATA', os.path.expanduser('~'))
-    config_dir = os.path.join(app_data, 'SyncGUI')
+    """获取配置文件保存目录（用户目录/SyncGUI）"""
+    # 获取用户目录
+    config_dir = os.path.join(os.path.expanduser('~'), 'SyncGUI')
     
     # 确保目录存在
     if not os.path.exists(config_dir):
@@ -2898,8 +2897,7 @@ class AboutDialog(FadeDialog):
         # 检查更新按钮（仅 GitHub 版本显示）
         if Config.ENABLE_CHECK_UPDATE:
             check_update_btn = QPushButton(I18n.tr("btn_check_update", self.lang))
-            check_update_btn.setMinimumWidth(120)
-            check_update_btn.setFixedHeight(36)
+            check_update_btn.setFixedSize(100, 36)
             check_update_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #339af0;
@@ -2912,7 +2910,6 @@ class AboutDialog(FadeDialog):
                     background-color: #228be6;
                 }
             """)
-            check_update_btn.adjustSize()
             check_update_btn.clicked.connect(self._check_update)
             btn_layout.addWidget(check_update_btn)
             
@@ -2982,13 +2979,13 @@ class AboutDialog(FadeDialog):
             
             # 遍历所有 tags，找到版本号最大的那个
             latest_tag = None
-            latest_version_num = -1
-            
+            latest_version_num = -1.0
+
             for tag in data:
                 tag_name = tag.get('name', '')
-                version_match = re.search(r'R(\d+)', tag_name)
+                version_match = re.search(r'R(\d+(?:\.\d+)?)', tag_name)
                 if version_match:
-                    version_num = int(version_match.group(1))
+                    version_num = float(version_match.group(1))
                     if version_num > latest_version_num:
                         latest_version_num = version_num
                         latest_tag = tag_name
@@ -2999,13 +2996,13 @@ class AboutDialog(FadeDialog):
                 return
             
             # 解析当前版本号
-            current_version_match = re.search(r'R(\d+)', Config.APP_VERSION)
+            current_version_match = re.search(r'R(\d+(?:\.\d+)?)', Config.APP_VERSION)
             if not current_version_match:
                 QMessageBox.warning(self, I18n.tr("update_title", self.lang),
                                    I18n.tr("update_version_error", self.lang))
                 return
             
-            current_version = int(current_version_match.group(1))
+            current_version = float(current_version_match.group(1))
             
             # 比较版本号
             if latest_version_num > current_version:

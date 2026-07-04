@@ -7,8 +7,8 @@ class Config:
 
     # 应用信息
     APP_NAME = "SyncGUI"
-    APP_VERSION = "R11" 
-    STORE_VERSION = "11.5.0.0"
+    APP_VERSION = "R11.6" 
+    STORE_VERSION = "11.6.0.0"
     APP_AUTHOR = "Lisselde_E"
     APP_EMAIL = "Lisselde.E@outlook.com"
 

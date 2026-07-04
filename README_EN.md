@@ -7,7 +7,6 @@ SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It su
 ## Project Information
 
 - **Project Name**: SyncGUI
-- **Project Version**: R11
 - **Project Author**: Lisselde_E
 - **Contact Email**: Lisselde.E@outlook.com
 - **Project Repository**: https://github.com/LisseldeE/SyncGUI
@@ -89,7 +88,7 @@ Supports one-way sync between two endpoints, with two sub-modes:
 ### Configuration Management
 
 - Configuration file automatically saves user settings
-- Configuration path located in AppData, adapted for Microsoft Store environment
+- Configuration path located in user directory (e.g., C:\Users\Username\SyncGUI)
 - Support ignore rules, sync rules configuration
 - Support custom ignore rule syntax
 
@@ -183,7 +182,17 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 - Fixed sync exception caused by switching modes during scan operations
 - Released final build of this version
 
-See：https://github.com/LisseldeE/SyncGUI/blob/main/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.log
+**#04**
+- Optimized display effects in light mode
+
+**#05**
+- Added Microsoft Store version adaptation
+- Fixed issues in error logs
+
+**#06**
+- Changed configuration file save path to avoid using MSIX virtual environment
+
+See: https://github.com/LisseldeE/SyncGUI/blob/main/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.log
 
 ## Open Source Declaration
 
