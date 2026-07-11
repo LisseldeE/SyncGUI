@@ -3,7 +3,6 @@ SyncGUI - 双端文件同步工具
 
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
-Email: Lisselde.E@outlook.com
 License: MIT
 """
 

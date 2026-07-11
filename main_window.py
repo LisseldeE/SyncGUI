@@ -3,7 +3,6 @@ SyncGUI - 本地与移动介质双向文件同步工具
 
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
-Email: Lisselde.E@outlook.com
 License: MIT
 """
 
@@ -67,7 +66,7 @@ class AnimatedButton(QPushButton):
 
 class ClickableLabel(QLabel):
     """
-    可点击的标签类
+    可点击的标签类（原始实现 - 不控制样式）
     - 鼠标悬停时显示手型光标
     - 点击时发出clicked信号
     """
@@ -2666,15 +2665,17 @@ class RenameDialog(FadeDialog):
         self.lang = lang
         self.old_name = old_name
         self.new_name = old_name
-        # 提取前缀和尾缀（保留"目录"/"Directory"尾缀）
-        self.suffix = ""
+        # 提取前缀和尾缀（根据语言动态设置）
+        self.suffix = lang == "zh" and "目录" or " Directory"
         self.prefix = old_name
+        # 去掉可能存在的旧后缀
         if old_name.endswith("目录"):
-            self.suffix = "目录"
             self.prefix = old_name[:-2]
         elif old_name.endswith("Directory"):
-            self.suffix = " Directory"
             self.prefix = old_name[:-9]
+        elif old_name.endswith(" Directory"):
+            self.prefix = old_name[:-10]
+
         self.setWindowTitle(I18n.tr("rename_dialog_title", lang))
         self.setModal(True)
         self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint)
@@ -2812,18 +2813,18 @@ class AboutDialog(FadeDialog):
         self.setWindowTitle(I18n.tr("about_title", lang))
         self.setModal(True)
         # 设置窗口标志：只保留关闭按钮
-        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint)
-        # 根据是否显示检查更新按钮调整窗口高度
-        height = 320 if Config.ENABLE_CHECK_UPDATE else 280
+        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint)
+        # 根据是否显示检查更新按钮调整窗口高度（增加垂直分散度）
+        height = 300 if Config.ENABLE_CHECK_UPDATE else 260
         self.setFixedSize(400, height)
         self._init_ui()
-    
+
     def _init_ui(self):
         layout = QVBoxLayout()
-        layout.setSpacing(12)
-        layout.setContentsMargins(25, 25, 25, 25)
-        
-        # 标题
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # 标题（蓝色，22px）
         title_label = QLabel(Config.APP_NAME)
         title_label.setStyleSheet("""
             QLabel {
@@ -2834,77 +2835,104 @@ class AboutDialog(FadeDialog):
         """)
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
-        
-        # 版本信息
-        version_label = QLabel(f"{I18n.tr('about_version_label', self.lang)}：{Config.DISPLAY_VERSION}")
-        version_label.setStyleSheet("font-size: 13px;")
+
+        layout.addSpacing(8)
+
+        # 版本信息（12px）
+        version_label = QLabel(f"{I18n.tr('about_version_label', self.lang)} {Config.DISPLAY_VERSION}")
+        version_label.setStyleSheet("font-size: 12px; color: #495057;")
         version_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(version_label)
-        
-        # 描述
+
+        # 描述（灰色小字，11px）
         desc_label = QLabel(I18n.tr("about_description", self.lang))
-        desc_label.setStyleSheet("font-size: 13px;")
+        desc_label.setStyleSheet("font-size: 11px; color: #868e96;")
         desc_label.setAlignment(Qt.AlignCenter)
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
-        
-        layout.addSpacing(8)
-        
-        # 作者信息
+
+        layout.addSpacing(12)
+
+        # 作者信息（灰色悬浮变蓝，不可点击，11px）
         author_label = QLabel(f"{I18n.tr('about_author_label', self.lang)}：{Config.APP_AUTHOR}")
-        author_label.setStyleSheet("font-size: 13px;")
-        author_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(author_label)
-        
-        # GitHub（可点击打开浏览器）
-        github_label = QLabel(f"GitHub: {Config.GITHUB_REPO}")
-        github_label.setStyleSheet("""
+        author_label.setStyleSheet("""
             QLabel {
-                font-size: 13px;
-                color: #339af0;
-            }
-            QLabel:hover {
-                color: #228be6;
-            }
-        """)
-        github_label.setAlignment(Qt.AlignCenter)
-        github_label.setCursor(Qt.PointingHandCursor)
-        github_label.mousePressEvent = lambda event: self._open_github()
-        layout.addWidget(github_label)
-        
-        # 邮箱（可点击复制）
-        email_label = QLabel(f"Email: {Config.APP_EMAIL}")
-        email_label.setStyleSheet("""
-            QLabel {
-                font-size: 13px;
+                font-size: 11px;
                 color: #495057;
             }
             QLabel:hover {
                 color: #339af0;
             }
         """)
-        email_label.setAlignment(Qt.AlignCenter)
-        email_label.setCursor(Qt.PointingHandCursor)
-        email_label.mousePressEvent = lambda event: self._copy_email()
-        layout.addWidget(email_label)
-        
+        author_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(author_label)
+
+        # GitHub链接（灰色悬浮变蓝，可点击，11px）
+        github_label = QLabel(f"GitHub: {Config.GITHUB_REPO}")
+        github_label.setStyleSheet("""
+            QLabel {
+                font-size: 11px;
+                color: #495057;
+            }
+            QLabel:hover {
+                color: #339af0;
+            }
+        """)
+        github_label.setAlignment(Qt.AlignCenter)
+        github_label.setCursor(Qt.PointingHandCursor)
+        github_label.mousePressEvent = lambda event: self._open_github(event)
+        layout.addWidget(github_label)
+
+        layout.addSpacing(8)
+
+        # 问题反馈和查看详情链接（使用 QLabel + 手动控制下划线）
+        link_layout = QHBoxLayout()
+        link_layout.addStretch()
+
+        # 创建问题反馈链接
+        self.feedback_label = QLabel(I18n.tr('about_feedback', self.lang))
+        self.feedback_label.setStyleSheet("QLabel { font-size: 11px; color: #339af0; }")
+        self.feedback_label.setAlignment(Qt.AlignCenter)
+        self.feedback_label.setCursor(Qt.PointingHandCursor)
+        self.feedback_label.mousePressEvent = lambda event: self._open_issues(event)
+        # 手动实现悬浮下划线效果
+        self.feedback_label.enterEvent = lambda event: self._apply_link_hover_style(self.feedback_label)
+        self.feedback_label.leaveEvent = lambda event: self._apply_link_normal_style(self.feedback_label)
+        link_layout.addWidget(self.feedback_label)
+
+        link_layout.addSpacing(20)
+
+        # 创建查看详情链接
+        self.details_label = QLabel(I18n.tr('about_details', self.lang))
+        self.details_label.setStyleSheet("QLabel { font-size: 11px; color: #339af0; }")
+        self.details_label.setAlignment(Qt.AlignCenter)
+        self.details_label.setCursor(Qt.PointingHandCursor)
+        self.details_label.mousePressEvent = lambda event: self._open_details(event)
+        # 手动实现悬浮下划线效果
+        self.details_label.enterEvent = lambda event: self._apply_link_hover_style(self.details_label)
+        self.details_label.leaveEvent = lambda event: self._apply_link_normal_style(self.details_label)
+        link_layout.addWidget(self.details_label)
+
+        link_layout.addStretch()
+        layout.addLayout(link_layout)
+
         layout.addStretch()
-        
-        # 按钮区域
+
+        # 按钮区域（120×36px）
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        
-        # 检查更新按钮（仅 GitHub 版本显示）
+
+        # 检查更新按钮（仅开源版显示）
         if Config.ENABLE_CHECK_UPDATE:
             check_update_btn = QPushButton(I18n.tr("btn_check_update", self.lang))
-            check_update_btn.setFixedSize(100, 36)
+            check_update_btn.setFixedSize(120, 36)
             check_update_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #339af0;
                     color: white;
                     border: none;
                     border-radius: 6px;
-                    padding: 0 10px;
+                    font-size: 13px;
                 }
                 QPushButton:hover {
                     background-color: #228be6;
@@ -2912,12 +2940,12 @@ class AboutDialog(FadeDialog):
             """)
             check_update_btn.clicked.connect(self._check_update)
             btn_layout.addWidget(check_update_btn)
-            
+
             btn_layout.addSpacing(10)
-        
+
         # 关闭按钮
         close_btn = QPushButton(I18n.tr("btn_close", self.lang))
-        close_btn.setFixedSize(100, 36)
+        close_btn.setFixedSize(120, 36)
         close_btn.setStyleSheet("""
             QPushButton {
                 border: 1px solid #ced4da;
@@ -2930,23 +2958,47 @@ class AboutDialog(FadeDialog):
         """)
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
-        
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-        
+
         self.setLayout(layout)
-    
-    def _open_github(self):
+
+    def _open_github(self, event):
         """打开GitHub链接"""
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl(f"https://github.com/{Config.GITHUB_REPO}"))
-    
-    def _copy_email(self):
-        """复制邮箱到剪贴板"""
-        from PySide6.QtWidgets import QApplication
-        clipboard = QApplication.clipboard()
-        clipboard.setText(Config.APP_EMAIL)
+
+    def _open_issues(self, event):
+        """打开GitHub Issues页面（问题反馈）"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(f"https://github.com/{Config.GITHUB_REPO}/issues"))
+
+    def _open_details(self, event):
+        """打开作者主页链接（查看详情）"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(Config.APP_AUTHOR_LINK))
+
+    def _apply_link_hover_style(self, label):
+        """应用链接悬浮样式（蓝色+下划线）"""
+        from PySide6.QtGui import QFont, QEnterEvent
+        if isinstance(label, QLabel):
+            label.setStyleSheet("QLabel { font-size: 11px; color: #228be6; }")
+            font = QFont(label.font())
+            font.setUnderline(True)
+            label.setFont(font)
+
+    def _apply_link_normal_style(self, label):
+        """应用链接正常样式（蓝色+无下划线）"""
+        from PySide6.QtGui import QFont
+        if isinstance(label, QLabel):
+            label.setStyleSheet("QLabel { font-size: 11px; color: #339af0; }")
+            font = QFont(label.font())
+            font.setUnderline(False)
+            label.setFont(font)
     
     def _check_update(self):
         """检查更新（根据语言选择 API 源）"""
@@ -3863,6 +3915,8 @@ QHeaderView::section:last {{
         """去掉名称的目录尾缀，得到纯名称前缀"""
         if name.endswith("目录"):
             return name[:-2]
+        elif name.endswith(" Directory"):
+            return name[:-10]
         elif name.endswith("Directory"):
             return name[:-9]
         return name
@@ -3870,46 +3924,38 @@ QHeaderView::section:last {{
     def _get_subtitle_text(self, status_key="header_subtitle"):
         """获取带自定义名称的 subtitle 文本"""
         # 提取名称前缀（去掉"目录"尾缀）
-        removable_prefix = self.removable_name
-        if removable_prefix.endswith("目录"):
-            removable_prefix = removable_prefix[:-2]
-        elif removable_prefix.endswith("Directory"):
-            removable_prefix = removable_prefix[:-9]
-        
-        local_prefix = self.local_name
-        if local_prefix.endswith("目录"):
-            local_prefix = local_prefix[:-2]
-        elif local_prefix.endswith("Directory"):
-            local_prefix = local_prefix[:-9]
-        
+        removable_prefix = self._get_clean_name(self.removable_name)
+        local_prefix = self._get_clean_name(self.local_name)
+
         # 使用翻译模板并填充自定义名称
         template = I18n.tr(status_key, self.current_lang)
         return template.format(a=removable_prefix, b=local_prefix)
-    
+
     def _get_direction_text(self):
         """获取方向按钮文本"""
         if self.sync_direction == "removable_to_local":
             template = I18n.tr("direction_removable_to_local", self.current_lang)
         else:
             template = I18n.tr("direction_local_to_removable", self.current_lang)
-        
+
         # 提取名称前缀（去掉"目录"尾缀）
-        removable_prefix = self.removable_name
-        if removable_prefix.endswith("目录"):
-            removable_prefix = removable_prefix[:-2]
-        elif removable_prefix.endswith("Directory"):
-            removable_prefix = removable_prefix[:-9]
-        
-        local_prefix = self.local_name
-        if local_prefix.endswith("目录"):
-            local_prefix = local_prefix[:-2]
-        elif local_prefix.endswith("Directory"):
-            local_prefix = local_prefix[:-9]
-        
+        removable_prefix = self._get_clean_name(self.removable_name)
+        local_prefix = self._get_clean_name(self.local_name)
+
         return template.format(a=removable_prefix, b=local_prefix)
-    
+
     def _update_dir_labels(self):
-        """更新目录标签显示"""
+        """更新目录标签显示（根据当前语言动态更新后缀）"""
+        # 提取名称前缀（去掉旧后缀）
+        removable_prefix = self._get_clean_name(self.removable_name)
+        local_prefix = self._get_clean_name(self.local_name)
+
+        # 根据当前语言添加新后缀
+        suffix = self._get_suffix()
+        self.removable_name = removable_prefix + suffix
+        self.local_name = local_prefix + suffix
+
+        # 更新标签显示
         self.wintogo_label.setText(self.removable_name)
         self.local_label.setText(self.local_name)
         self.rename_hint_label.setText(I18n.tr("click_to_rename", self.current_lang))

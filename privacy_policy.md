@@ -87,7 +87,6 @@ SyncGUI（以下简称"本应用"）是一款双端文件同步工具，致力�
 
 如果您对本隐私政策有任何疑问，可通过以下方式联系开发者：
 
-- Email: Lisselde.E@outlook.com
 - GitHub: https://github.com/LisseldeE/SyncGUI
 
 ---

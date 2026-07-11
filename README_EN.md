@@ -8,7 +8,6 @@ SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It su
 
 - **Project Name**: SyncGUI
 - **Project Author**: Lisselde_E
-- **Contact Email**: Lisselde.E@outlook.com
 - **Project Repository**: https://github.com/LisseldeE/SyncGUI
 
 ## Download
@@ -163,36 +162,11 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 ## Changelog
 
 ### R11 (2026.6.27)
-**#01**
-- Migrated from PyQt5 to PySide6 architecture
-- Refactored interface layout and partial styles
-- Fixed display exceptions caused by interface framework switching
-- Added custom two-endpoint names feature
-- Fixed incomplete display of text and icons on language switch button
-
-**#02**
-- Removed "Sync Operation" column from bottom list
-- Optimized bottom list display
-- Fixed issue where operation queue status was not refreshed when switching sync modes
-
-**#03**
-- Fixed and optimized interface startup animation
-- Fixed 9 known issues reported by the community
-- Unified popup interface in manual selection sync mode
-- Fixed sync exception caused by switching modes during scan operations
-- Released final build of this version
-
-**#04**
-- Optimized display effects in light mode
-
-**#05**
-- Added Microsoft Store version adaptation
-- Fixed issues in error logs
 
 **#06**
 - Changed configuration file save path to avoid using MSIX virtual environment
 
-See: https://github.com/LisseldeE/SyncGUI/blob/main/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97.log
+See: [CHANGELOG.md](https://github.com/LisseldeE/SyncGUI/blob/main/CHANGELOG.md)
 
 ## Open Source Declaration
 
@@ -201,8 +175,5 @@ This project uses MIT open source license.
 ## Contact & Feedback
 
 **This app is under development, if you have questions or new ideas, please contact me!**
-
-- 📧 Email: Lisselde.E@outlook.com
-- 🐙 GitHub: https://github.com/LisseldeE/SyncGUI
 
 Welcome to submit Issues and Pull Requests!

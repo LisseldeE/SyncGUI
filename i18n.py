@@ -3,7 +3,6 @@ SyncGUI - 国际化支持模块
 
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
-Email: Lisselde.E@outlook.com
 License: MIT
 """
 
@@ -159,6 +158,8 @@ class I18n:
             "about_version_label": "版本",
             "about_author_label": "作者",
             "about_description": "一个简洁高效的双端文件同步工具",
+            "about_feedback": "问题反馈",
+            "about_details": "查看详情",
             
             # 检查更新
             "btn_check_update": "检查更新",
@@ -322,6 +323,8 @@ class I18n:
             "about_version_label": "Version",
             "about_author_label": "Author",
             "about_description": "A simple and efficient dual-endpoint file synchronization tool",
+            "about_feedback": "Feedback",
+            "about_details": "Details",
             
             # Check update
             "btn_check_update": "Check Update",
