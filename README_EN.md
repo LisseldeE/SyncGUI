@@ -4,10 +4,15 @@
 
 SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It supports intelligent difference detection, multiple sync modes, real-time progress display, providing a smooth user experience. Built with Pyside6 architecture, Windows API efficient file copying, and MD5 hash content comparison.
 
+## Project Screenshots
+
+![Project Screenshots](https://lisseldee.github.io/images/webp/2-1.webp)
+
 ## Project Information
 
 - **Project Name**: SyncGUI
 - **Project Author**: Lisselde_E
+- **Project Homepage**: https://lisseldee.github.io
 - **Project Repository**: https://github.com/LisseldeE/SyncGUI
 
 ## Download

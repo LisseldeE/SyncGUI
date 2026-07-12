@@ -4,10 +4,15 @@
 
 SyncGUI 是一款简洁高效的双端文件同步工具。支持智能差异检测、多种同步模式、实时进度显示，提供流畅的用户体验。采用 Pyside6 架构，Windows API 高效文件复制，MD5 哈希内容比对。
 
+## 项目截图
+
+![项目截图](https://lisseldee.github.io/images/webp/2-1.webp)
+
 ## 项目信息
 
 - **项目名称**: SyncGUI
 - **项目作者**: Lisselde_E
+- **项目主页**: https://lisseldee.github.io
 - **项目仓库**: https://github.com/LisseldeE/SyncGUI
 
 ## 下载
