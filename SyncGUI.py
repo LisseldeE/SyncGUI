@@ -27,7 +27,7 @@ def get_resource_path(relative_path):
     获取资源文件的绝对路径，兼容打包和未打包两种情况
     
     Args:
-        relative_path: 相对路径（如 '1.ico'）
+        relative_path: 相对路径（如 'icon.ico'）
     
     Returns:
         资源文件的绝对路径
@@ -65,7 +65,7 @@ def main():
     app.setFont(font)
     
     # 使用 get_resource_path 获取图标路径，兼容打包和未打包情况
-    icon_path = get_resource_path('1.ico')
+    icon_path = get_resource_path('icon.ico')
     
     if os.path.exists(icon_path):
         icon = QIcon(icon_path)

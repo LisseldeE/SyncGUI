@@ -12,7 +12,7 @@ SyncGUI 是一款简洁高效的双端文件同步工具。支持智能差异检
 
 - **项目名称**: SyncGUI
 - **项目作者**: Lisselde_E
-- **项目主页**: https://lisseldee.github.io
+- **项目主页**: https://lisseldee.github.io/#2
 - **项目仓库**: https://github.com/LisseldeE/SyncGUI
 
 ## 下载

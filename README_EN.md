@@ -12,7 +12,7 @@ SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It su
 
 - **Project Name**: SyncGUI
 - **Project Author**: Lisselde_E
-- **Project Homepage**: https://lisseldee.github.io
+- **Project Homepage**: https://lisseldee.github.io/#2
 - **Project Repository**: https://github.com/LisseldeE/SyncGUI
 
 ## Download
