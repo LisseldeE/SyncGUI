@@ -8,7 +8,7 @@ class Config:
     # 应用信息
     APP_NAME = "SyncGUI"
     APP_VERSION = "R11.6" 
-    STORE_VERSION = "11.6.2.0"
+    STORE_VERSION = "11.6.3.0"
     APP_AUTHOR = "Lisselde_E"
     APP_AUTHOR_LINK = "https://lisseldee.github.io/#2"
 
