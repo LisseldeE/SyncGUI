@@ -1,5 +1,7 @@
 """
 SyncGUI 配置文件
+
+Copyright (c) 2026 Lisselde_E.
 """
 
 class Config:
@@ -7,8 +9,8 @@ class Config:
 
     # 应用信息
     APP_NAME = "SyncGUI"
-    APP_VERSION = "R11.6" 
-    STORE_VERSION = "11.6.3.0"
+    APP_VERSION = "R11.7" 
+    STORE_VERSION = "11.7.0.0"
     APP_AUTHOR = "Lisselde_E"
     APP_AUTHOR_LINK = "https://lisseldee.github.io/#2"
 

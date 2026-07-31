@@ -4,6 +4,7 @@ SyncGUI - 本地与移动介质双向文件同步工具
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
 License: MIT
+Copyright (c) 2026 Lisselde_E.
 """
 
 import sys
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
     QFrame, QSizePolicy, QCheckBox, QListWidget, QListWidgetItem,
     QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPoint, QPropertyAnimation, QByteArray, QEventLoop
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPoint, QPropertyAnimation, QByteArray
 from PySide6.QtGui import QColor, QFont, QPalette
 
 from sync_core import (
@@ -136,6 +137,9 @@ _DISABLED_BTN_QSS = (
     "    border: none;"
 )
 
+# 按钮悬浮背景色：深色模式用深灰，浅色模式用浅灰
+_HOVER_BG = "#3a3a3a" if _is_dark_mode() else "#f1f3f5"
+
 
 STYLESHEET = """
 QGroupBox {
@@ -171,6 +175,7 @@ QPushButton {
     border: 1px solid #ced4da;
 }
 QPushButton:hover {
+    background-color: __HOVER_BG__;
     border: 1px solid #adb5bd;
 }
 QPushButton#browseBtn:disabled {
@@ -197,6 +202,7 @@ QPushButton#aboutBtn {
     padding: 0;
 }
 QPushButton#aboutBtn:hover {
+    background-color: __HOVER_BG__;
     color: #228be6;
     border: 1px solid #adb5bd;
 }
@@ -269,7 +275,7 @@ QMessageBox QPushButton[text="No"]:hover,
 QMessageBox QPushButton[text="Cancel"]:hover {
     background-color: #f03e3e;
 }
-""".replace("__DISABLED__", _DISABLED_BTN_QSS)
+""".replace("__DISABLED__", _DISABLED_BTN_QSS).replace("__HOVER_BG__", _HOVER_BG)
 
 
 def load_config():
@@ -475,50 +481,7 @@ class SyncWorker(QThread):
 
 
 class FadeDialog(QDialog):
-    """带淡入淡出动画的对话框基类。
-
-    手动选择模式下连续弹窗会逐个开关，闪烁感强且割裂。
-    通过在 show 时淡入、done 时淡出（局部事件循环等待动画完成），
-    使连续弹窗过渡更平滑。
-    """
-    _FADE_DURATION = 200  # 毫秒，与 MainWindow 启动动画一致
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._fade_anim = None
-        self._closing = False
-        # 强制创建原生窗口句柄（HWND），确保 setWindowOpacity 在窗口
-        # 显示前生效，避免 Win32 先将窗口以白底闪现一帧再变透明
-        self.winId()
-        # 初始透明，待 showEvent 触发淡入
-        self.setWindowOpacity(0.0)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._fade_anim = QPropertyAnimation(self, b"windowOpacity", self)
-        self._fade_anim.setDuration(self._FADE_DURATION)
-        self._fade_anim.setStartValue(self.windowOpacity())
-        self._fade_anim.setEndValue(1.0)
-        self._fade_anim.start()
-
-    def done(self, result):
-        if self._closing:
-            return
-        self._closing = True
-        self.setEnabled(False)
-        if self._fade_anim is not None:
-            self._fade_anim.stop()
-        start = self.windowOpacity() or 1.0
-        fade_out = QPropertyAnimation(self, b"windowOpacity", self)
-        fade_out.setDuration(self._FADE_DURATION)
-        fade_out.setStartValue(start)
-        fade_out.setEndValue(0.0)
-        # 局部事件循环等待淡出完成后再真正关闭，避免阻塞 exec() 的返回
-        loop = QEventLoop()
-        fade_out.finished.connect(lambda: (loop.quit(), super(FadeDialog, self).done(result)))
-        fade_out.start()
-        self._fade_anim = fade_out
-        loop.exec()
+    """对话框基类（使用默认系统窗口控制）。"""
 
 
 # ============================================================
@@ -852,8 +815,7 @@ class ManualSyncWizard(FadeDialog):
     SLIDE_DURATION = 200  # 毫秒
 
     def __init__(self, diffs, same_dir_counts, lang, removable_name, local_name, parent=None):
-        # 在 super().__init__ 前预初始化，因为 FadeDialog.__init__ 调用 winId()
-        # 会触发首次 resizeEvent，此时 _current_page / _sliding 必须已存在
+        # 在 super().__init__ 前预初始化，因为 resizeEvent 可能在这些属性之前触发
         self._current_page = None
         self._sliding = False
         super().__init__(parent)
@@ -3180,13 +3142,8 @@ class MainWindow(QMainWindow):
         self.sync_transferred_bytes = 0
         self._delete_both_dirs = set()
         
-        # 首次显示标记，用于淡入动画只执行一次
-        self._first_show = True
-        
-        # 强制创建原生窗口句柄，预先设置透明度为 0，
-        # 避免 Win32 先以白色背景映射窗口再变透明导致闪烁
+        # 强制创建原生窗口句柄（HWND），确保后续 winId() 调用有效
         self.winId()
-        self.setWindowOpacity(0.0)
         
         self._init_ui()
         self._load_saved_paths()
@@ -3199,20 +3156,8 @@ class MainWindow(QMainWindow):
         self._update_header_status()
     
     def showEvent(self, event):
-        """首次显示时淡入，避免白色闪烁。"""
+        """窗口显示后取消路径框选中态。"""
         super().showEvent(event)
-        if not self._first_show:
-            return
-        self._first_show = False
-        
-        from PySide6.QtCore import QPropertyAnimation
-        anim = QPropertyAnimation(self, b"windowOpacity", self)
-        anim.setDuration(200)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.start()
-        self._window_fade_anim = anim  # 防止被GC
-
         # 窗口显示后焦点可能落在路径框并自动全选文字，
         # 延迟到事件循环取消选中，避免初次启动路径框文字被高亮
         QTimer.singleShot(0, self._deselect_path_edits)
@@ -3245,6 +3190,7 @@ class MainWindow(QMainWindow):
         
         self.lang_btn = AnimatedButton(I18n.tr("language_btn", self.current_lang))
         self.lang_btn.setMinimumSize(80, 36)
+        hover_bg = "#3a3a3a" if _is_dark_mode() else "#f1f3f5"
         self.lang_btn.setStyleSheet("""
             QPushButton {
                 border: 1px solid #ced4da;
@@ -3252,6 +3198,7 @@ class MainWindow(QMainWindow):
                 font-size: 13px;
             }
             QPushButton:hover {
+                background-color: """ + hover_bg + """;
                 border: 1px solid #adb5bd;
             }
             QPushButton:disabled {
@@ -4073,7 +4020,9 @@ QHeaderView::section:last {{
         elif local_prefix.endswith("Directory"):
             local_prefix = local_prefix[:-9]
         
-        config = {
+        # 先加载现有配置，再更新，避免覆盖其他模块写入的字段（如参考信息）
+        config = load_config()
+        config.update({
             'A_dir': self.wintogo_edit.text().strip(),
             'B_dir': self.local_edit.text().strip(),
             'ignore_rules': self.ignore_rules,
@@ -4086,7 +4035,7 @@ QHeaderView::section:last {{
             'extra_items_mode': self.extra_items_mode,
             'removable_name': removable_prefix,
             'local_name': local_prefix
-        }
+        })
         save_config(config)
     
     def _show_ignore_dialog(self):
@@ -4763,6 +4712,9 @@ QHeaderView::section:last {{
         self._set_feature_buttons_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+
+        self.sync_start_time = time.time()
+        self.sync_transferred_bytes = 0
 
         self.sync_worker = SyncWorker(
             self.diff_results, self.conflict_decisions,

@@ -4,6 +4,7 @@ SyncGUI - 国际化支持模块
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
 License: MIT
+Copyright (c) 2026 Lisselde_E.
 """
 
 from typing import Dict

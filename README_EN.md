@@ -168,8 +168,10 @@ After configuring `sync_rules`, first-level subdirectories under specified direc
 
 ### R11 (2026.6.27)
 
-**#06**
-- Changed configuration file save path to avoid using MSIX virtual environment
+**#07**
+- Optimization: Main interface control display effect
+- Added: Support for Install installation
+- Fixed: Scan phase initialization exception problem
 
 See: [CHANGELOG.md](https://github.com/LisseldeE/SyncGUI/blob/main/CHANGELOG.md)
 

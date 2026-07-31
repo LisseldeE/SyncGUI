@@ -4,6 +4,7 @@ SyncGUI - 双端文件同步工具
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
 License: MIT
+Copyright (c) 2026 Lisselde_E.
 """
 
 import sys
@@ -11,7 +12,7 @@ import os
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon, QFont
 from PySide6.QtCore import Qt
-from main_window import MainWindow, STYLESHEET
+from main_window import MainWindow, STYLESHEET, load_config, save_config
 from config import Config
 
 # Windows任务栏图标设置
@@ -43,6 +44,25 @@ def get_resource_path(relative_path):
 
 
 def main():
+    # 写入版本信息到配置文件（仅在 ENABLE_CHECK_UPDATE=True 时）
+    if Config.ENABLE_CHECK_UPDATE:
+        try:
+            # 获取当前可执行文件路径
+            if getattr(sys, 'frozen', False):
+                # PyInstaller 打包：exe 完整路径
+                exe_path = sys.executable
+            else:
+                # 开发环境：主脚本路径
+                exe_path = os.path.abspath(__file__)
+
+            data = load_config()
+            data["version"] = Config.APP_VERSION
+            data["exe_path"] = exe_path
+            data["app_name"] = Config.APP_NAME
+            save_config(data)
+        except Exception:
+            pass  # 静默失败，不影响程序启动
+
     # PySide6 默认启用高DPI支持
     # 设置高DPI缩放因子舍入策略，避免150%缩放时界面过大
     QApplication.setHighDpiScaleFactorRoundingPolicy(

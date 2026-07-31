@@ -3,7 +3,7 @@ __pycache__/
 .vs/
 output/
 .md/
-dist/
 
 *.exe
-*.bat
+
+SHA-256.json

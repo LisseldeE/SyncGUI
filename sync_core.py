@@ -4,6 +4,7 @@ SyncGUI - 同步核心模块
 Author: Lisselde_E
 GitHub: https://github.com/LisseldeE
 License: MIT
+Copyright (c) 2026 Lisselde_E.
 """
 
 import os
