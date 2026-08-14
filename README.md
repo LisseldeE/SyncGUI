@@ -6,7 +6,7 @@ SyncGUI 是一款简洁高效的双端文件同步工具。支持智能差异检
 
 ## 项目截图
 
-![项目截图](https://lisseldee.github.io/images/webp/2-1.webp)
+![项目截图](https://lisseldee.github.io/assets/images/webp/2-1.webp)
 
 ## 项目信息
 

@@ -6,7 +6,7 @@ SyncGUI is a simple and efficient dual-endpoint file synchronization tool. It su
 
 ## Project Screenshots
 
-![Project Screenshots](https://lisseldee.github.io/images/webp/2-1.webp)
+![Project Screenshots](https://lisseldee.github.io/assets/images/webp/2-1.webp)
 
 ## Project Information
 
