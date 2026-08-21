@@ -11,6 +11,7 @@ import sys
 import os
 import json
 import time
+import ssl
 from datetime import datetime
 from collections import defaultdict
 from PySide6.QtWidgets import (
@@ -2779,6 +2780,12 @@ class AboutDialog(FadeDialog):
         # 根据是否显示检查更新按钮调整窗口高度（增加垂直分散度）
         height = 300 if Config.ENABLE_CHECK_UPDATE else 260
         self.setFixedSize(400, height)
+
+        # SSL 上下文（避免 SSL 证书校验错误导致无法更新）
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
+
         self._init_ui()
 
     def _init_ui(self):
@@ -2962,151 +2969,140 @@ class AboutDialog(FadeDialog):
             font.setUnderline(False)
             label.setFont(font)
     
-    def _check_update(self):
-        """检查更新（根据语言选择 API 源）"""
+    def _get_latest_version(self):
+        """从 GitHub Pages 纯文本文件拉取最新版本号
+        返回值: (版本号字符串, 错误信息字符串) 元组
+            成功时: ("R11.7", None)
+            失败时: (None, "错误描述")
+        """
         import urllib.request
-        import json
+        import re
+
+        req = urllib.request.Request(Config.UPDATE_URL)
+        req.add_header('User-Agent', f"{Config.APP_NAME}/{Config.DISPLAY_VERSION}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=self.ssl_context) as response:
+                body = response.read().decode('utf-8').strip()
+            # io 文件为 R 前缀四段（如 R11.7.0.0），本程序使用二段 RV.X，
+            # 提取前两段（后两段固定 .0.0，忽略）。
+            match = re.match(r'R(\d+)(?:\.(\d+))?', body)
+            if not match:
+                return None, None
+            return f"R{match.group(1)}.{match.group(2) or 0}", None
+        except Exception as e:
+            return None, str(e)
+
+    def _check_update(self):
+        """检查更新（从 github.io 拉取版本号，下载落地页按语言区分）"""
         import re
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
-        
-        try:
-            # 根据语言选择 API 端点（中文用 Gitee，英文用 GitHub）
-            if self.lang == 'zh':
-                api_url = Config.GITEE_API
-                releases_url = Config.GITEE_RELEASES
-            else:
-                api_url = Config.GITHUB_API
-                releases_url = Config.GITHUB_RELEASES
-            
-            # 创建请求
-            req = urllib.request.Request(api_url)
-            req.add_header('User-Agent', f"{Config.APP_NAME}/{Config.DISPLAY_VERSION}")
-            
-            with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read().decode())
-            
-            if not data:
-                QMessageBox.information(self, I18n.tr("update_title", self.lang), 
-                                       I18n.tr("update_no_tags", self.lang))
-                return
-            
-            # 遍历所有 tags，找到版本号最大的那个
-            latest_tag = None
-            latest_version_num = -1.0
 
-            for tag in data:
-                tag_name = tag.get('name', '')
-                version_match = re.search(r'R(\d+(?:\.\d+)?)', tag_name)
-                if version_match:
-                    version_num = float(version_match.group(1))
-                    if version_num > latest_version_num:
-                        latest_version_num = version_num
-                        latest_tag = tag_name
+        # 拉取远程最新版本
+        latest, err = self._get_latest_version()
+        if not latest:
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                                err or I18n.tr("update_tag_error", self.lang))
+            return
+
+        # 解析当前版本号与远程版本号为可比较数值
+        latest_match = re.search(r'R(\d+(?:\.\d+)?)', latest)
+        current_match = re.search(r'R(\d+(?:\.\d+)?)', Config.APP_VERSION)
+        if not latest_match:
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                                I18n.tr("update_tag_error", self.lang))
+            return
+        if not current_match:
+            QMessageBox.warning(self, I18n.tr("update_title", self.lang),
+                                I18n.tr("update_version_error", self.lang))
+            return
+        latest_version_num = float(latest_match.group(1))
+        current_version = float(current_match.group(1))
+
+        # 比较版本号
+        if latest_version_num > current_version:
+            # 下载落地页按语言区分（中文 Gitee / 其他 GitHub）
+            releases_url = Config.GITEE_RELEASES if self.lang == 'zh' else Config.GITHUB_RELEASES
+
+            # 发现新版本，弹窗询问是否前往下载
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(I18n.tr("update_title", self.lang))
+            msg_box.setText(I18n.tr("update_found", self.lang).format(latest))
+            msg_box.setIcon(QMessageBox.NoIcon)
             
-            if latest_tag is None:
-                QMessageBox.warning(self, I18n.tr("update_title", self.lang),
-                                   I18n.tr("update_tag_error", self.lang))
-                return
+            # 设置整体样式
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    font-size: 11px;
+                }
+                QMessageBox QLabel {
+                    color: #495057;
+                    font-size: 11px;
+                    padding: 10px;
+                }
+            """)
             
-            # 解析当前版本号
-            current_version_match = re.search(r'R(\d+(?:\.\d+)?)', Config.APP_VERSION)
-            if not current_version_match:
-                QMessageBox.warning(self, I18n.tr("update_title", self.lang),
-                                   I18n.tr("update_version_error", self.lang))
-                return
+            # 自定义按钮
+            yes_btn = msg_box.addButton(I18n.tr("btn_yes", self.lang), QMessageBox.YesRole)
+            no_btn = msg_box.addButton(I18n.tr("btn_no", self.lang), QMessageBox.NoRole)
             
-            current_version = float(current_version_match.group(1))
+            # 设置按钮样式
+            yes_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #51cf66;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 24px;
+                    min-width: 80px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #40c057;
+                }
+            """)
             
-            # 比较版本号
-            if latest_version_num > current_version:
-                # 发现新版本，弹窗询问是否前往下载
-                msg_box = QMessageBox(self)
-                msg_box.setWindowTitle(I18n.tr("update_title", self.lang))
-                msg_box.setText(I18n.tr("update_found", self.lang).format(latest_tag))
-                msg_box.setIcon(QMessageBox.NoIcon)
-                
-                # 设置整体样式
-                msg_box.setStyleSheet("""
-                    QMessageBox {
-                        font-size: 11px;
-                    }
-                    QMessageBox QLabel {
-                        color: #495057;
-                        font-size: 11px;
-                        padding: 10px;
-                    }
-                """)
-                
-                # 自定义按钮
-                yes_btn = msg_box.addButton(I18n.tr("btn_yes", self.lang), QMessageBox.YesRole)
-                no_btn = msg_box.addButton(I18n.tr("btn_no", self.lang), QMessageBox.NoRole)
-                
-                # 设置按钮样式
-                yes_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #51cf66;
-                        color: white;
-                        border: none;
-                        border-radius: 6px;
-                        padding: 8px 24px;
-                        min-width: 80px;
-                        font-size: 11px;
-                    }
-                    QPushButton:hover {
-                        background-color: #40c057;
-                    }
-                """)
-                
-                no_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #ff6b6b;
-                        color: white;
-                        border: none;
-                        border-radius: 6px;
-                        padding: 8px 24px;
-                        min-width: 80px;
-                        font-size: 11px;
-                    }
-                    QPushButton:hover {
-                        background-color: #fa5252;
-                    }
-                """)
-                
-                msg_box.exec()
-                
-                if msg_box.clickedButton() == yes_btn:
-                    # 打开 releases 页面
-                    QDesktopServices.openUrl(QUrl(releases_url))
-            else:
-                # 当前已是最新版本（移除图标）
-                msg_box = QMessageBox(self)
-                msg_box.setWindowTitle(I18n.tr("update_title", self.lang))
-                msg_box.setText(I18n.tr("update_latest", self.lang))
-                msg_box.setIcon(QMessageBox.NoIcon)
-                
-                # 设置整体样式
-                msg_box.setStyleSheet("""
-                    QMessageBox {
-                        font-size: 11px;
-                    }
-                    QMessageBox QLabel {
-                        color: #495057;
-                        font-size: 11px;
-                        padding: 10px;
-                    }
-                """)
-                
-                msg_box.exec()
-        
-        except urllib.error.URLError as e:
-            # 网络错误（HTTPError 是 URLError 子类，会被此处捕获）
-            error_msg = I18n.tr("update_network_error", self.lang).replace("{error}", str(e))
-            QMessageBox.warning(self, I18n.tr("update_title", self.lang), error_msg)
-        except Exception as e:
-            # 其他错误
-            error_msg = I18n.tr("update_error", self.lang).replace("{error}", str(e))
-            QMessageBox.warning(self, I18n.tr("update_title", self.lang), error_msg)
+            no_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ff6b6b;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 24px;
+                    min-width: 80px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #fa5252;
+                }
+            """)
+            
+            msg_box.exec()
+            
+            if msg_box.clickedButton() == yes_btn:
+                # 打开 releases 页面
+                QDesktopServices.openUrl(QUrl(releases_url))
+        else:
+            # 当前已是最新版本（移除图标）
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(I18n.tr("update_title", self.lang))
+            msg_box.setText(I18n.tr("update_latest", self.lang))
+            msg_box.setIcon(QMessageBox.NoIcon)
+            
+            # 设置整体样式
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    font-size: 11px;
+                }
+                QMessageBox QLabel {
+                    color: #495057;
+                    font-size: 11px;
+                    padding: 10px;
+                }
+            """)
+            
+            msg_box.exec()
 
 
 class MainWindow(QMainWindow):

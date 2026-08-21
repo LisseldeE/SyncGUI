@@ -25,8 +25,8 @@ class Config:
     GITHUB_REPO = "LisseldeE/SyncGUI"
     GITEE_REPO = "Lisselde_E/SyncGUI"
 
-    # API 端点
-    GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/tags"
-    GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}/tags"
+    # 版本号托管于 GitHub Pages 纯文本文件，避免 raw 外链滥用/API tags 频率限制
+    UPDATE_URL = "https://lisseldee.github.io/version/syncgui"
+    # 下载落地页（按语言区分，保持不变）
     GITHUB_RELEASES = f"https://github.com/{GITHUB_REPO}/releases"
     GITEE_RELEASES = f"https://gitee.com/{GITEE_REPO}/releases"
